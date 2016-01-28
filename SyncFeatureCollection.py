@@ -1,4 +1,4 @@
-#*******************************************************************************
+﻿#*******************************************************************************
 # Name:        SyncFeatureCollection
 # Purpose:     Pushes edits from a hosted feature service to a feature
 #              collection.  This supports workflows that prohibit the hosted
@@ -41,15 +41,20 @@
 # Email: contracts@esri.com
 #*******************************************************************************
 
-import datetime, json, os, sys, subprocess, time, traceback, uuid, urllib
+import datetime, json, os, sys, subprocess, time, traceback, uuid, urllib, zipfile
 from ConfigParser import ConfigParser
 from subprocess import Popen
 from arcrest import manageorg
 import arcrest
 
+import arcpy, os, zipfile, time
+from ConfigParser import ConfigParser
+
+arcpy.env.OverwriteOutput = True
+
 # Read Configuration File
 config = ConfigParser()
-config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
+config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollectionModified.cfg')))
 
 # Configuralbe Variables
 # Application Program Title
@@ -85,6 +90,75 @@ licenseInfo = config.get('Service Description Info', 'licenseInfo')
 thumbnail = os.path.normpath(config.get('Service Description Info', 'thumbnail'))
 
 updateInterval = int(config.get('Update Interval', 'updateInterval'))* 60
+
+
+#######################################
+##TESTING
+gdb_path = os.path.normpath(config.get('TEMP GDB', 'gdbPath'))
+fc_name = os.path.normpath(config.get('FC NAME', 'fcName'))
+constraining_fc = os.path.normpath(config.get('CONSTRAINING CLASS', 'constrainingFC'))
+sd = json.loads(os.path.normpath(config.get('SD', 'sd')))
+lllyyrrss = json.loads(os.path.normpath(config.get('LAYERS', 'l')))
+num_pts = map(int, list(os.path.normpath(config.get('NP', 'np')).split(",")))
+li = json.loads(os.path.normpath(config.get('LAYER INFO', 'li')))
+
+def zip_dir(path, ziph):
+    isdir = os.path.isdir
+    for each in os.listdir(path):
+        fullname = path + "/" + each
+        if not isdir(fullname):
+            # If the workspace is a file geodatabase, avoid writing out lock
+            # files as they are unnecessary
+            if not each.endswith('.lock'):
+                # Write out the file and give it a relative archive path
+                try: 
+                    ziph.write(fullname, each)
+                except IOError: 
+                    None # Ignore any errors in writing file
+        else:
+            # Branch for sub-directories
+            for eachfile in os.listdir(fullname):
+                if not isdir(eachfile):
+                    if not each.endswith('.lock'):
+                        try: 
+                            ziph.write(fullname + "/" + eachfile, os.path.basename(fullname) + "/" + eachfile)
+                        except IOError: 
+                            None # Ignore any errors in writing file
+
+def updateData(x):
+    if x == "":
+        global ij
+        ij=0
+    else:
+        ij+=1
+    if ij == 3:
+        ij = 0
+    x=ij
+
+    out_path = os.path.join(gdb_path, fc_name)
+    if arcpy.Exists(out_path):
+        arcpy.Delete_management(out_path)
+        print("Old points deleted")
+
+    #create random points
+    arcpy.CreateRandomPoints_management(gdb_path, fc_name, constraining_fc, "", num_pts[x], "", "POINT", "")
+    print("New points created")
+    
+    #zip the GDB
+    p = os.path.join(os.path.abspath(os.path.dirname(__file__)), os.path.basename(fgdb1))
+    zip_file = zipfile.ZipFile(p, 'w', zipfile.ZIP_DEFLATED)
+    zip_dir(os.path.dirname(gdb_path), zip_file)
+    zip_file.close()
+    print("ZipFile created")
+
+    #replace old zip
+    if arcpy.Exists(fgdb1):
+        os.remove(fgdb1)
+
+    os.rename(p, fgdb1)
+    print("Data copied: " + fgdb1)
+
+#######################################
 
 #-------------------------------------------------------------------------------
 # Fixed Variables
@@ -126,13 +200,13 @@ def loggingStart(currentProcess):
         log.write("     " + str(starttime.strftime('%Y-%m-%d %H:%M:%S')) +" - " + currentProcess + "\n")
         log.close()
 #-------------------------------------------------------------------------------
-
 def logMessage(myMessage):
         # Close out the log file
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log = open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncLog", "SyncLog.txt"),"a")
         log.write("     " + str(d) + " - " +myMessage + "\n")
         log.close()
+        print("     " + str(d) + " - " +myMessage + "\n")
 #-------------------------------------------------------------------------------
 def loggingEnd(endingProcess):
         # Close out the log file
@@ -163,8 +237,10 @@ def watchDog(file_Name, attempts=0, timeout=5, sleep_int=5, total_Attempts=5):
 def timer():
     while True:
         time.sleep(updateInterval)
-        Popen([os.path.join(os.path.abspath(sys.exec_prefix),'python.exe'), os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.py')])
-        sys.exit(0)
+        updateData(ij)
+        sync_Init()
+        #Popen([os.path.join(os.path.abspath(sys.exec_prefix),'python.exe'), os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.py')])
+        #sys.exit(0)
 #-------------------------------------------------------------------------------
 def updateProductionFC(productionDict, tempFC_ID):
     try:
@@ -193,9 +269,10 @@ def updateProductionFC(productionDict, tempFC_ID):
         itemParams.description = description
         itemParams.snippet = snippet + " as of " + str(d)
         itemParams.licenseInfo = licenseInfo
+        itemParams.overwrite = True
 
         print "Updating production Feature Collection"
-        result = usercontent.updateItem(itemId=gdb_itemId, updateItemParameters=itemParams, text=updatedFeatures, async=False, overwrite=True)
+        result = usercontent.updateItem(itemId=gdb_itemId, updateItemParameters=itemParams, text=updatedFeatures)
 
 
 
@@ -210,7 +287,7 @@ def updateProductionFC(productionDict, tempFC_ID):
                 if (os.path.exists(jsonExport)):
                    os.unlink(jsonExport)
                 # Implement at final... removes old FGDB Zip file.
-                os.remove(fGDB)
+                #os.remove(fGDB)
                 logMessage(FCtitle + " was successfully updated!")
                 loggingEnd("Drive Texas was successully updated!")
                 print "Sync complete, Feature Collection updated"
@@ -229,6 +306,7 @@ def updateProductionFC(productionDict, tempFC_ID):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def export_tempFeatureCollection(myContentDict):
     try:
@@ -246,10 +324,14 @@ def export_tempFeatureCollection(myContentDict):
         fsID = myContentDict['Feature Service']
         if isinstance(usercontent, manageorg.administration._content.UserContent):
                 pass
+        #result = usercontent.exportItem(title=FCtemp,
+        #                                    itemId=fsID,
+        #                                    exportFormat=fcType,
+        #                                    exportParameters={"layers":[{"id":1},{"id":0}]})
         result = usercontent.exportItem(title=FCtemp,
-                                            itemId=fsID,
-                                            exportFormat=fcType,
-                                            exportParameters={"layers":[{"id":1},{"id":0}]})
+                                    itemId=fsID,
+                                    exportFormat=fcType,
+                                    exportParameters=li)
 
 
         exportedItemId = result['exportItemId']
@@ -289,6 +371,7 @@ def export_tempFeatureCollection(myContentDict):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def updateFS(contentDict,gdb_Source):
     try:
@@ -299,25 +382,48 @@ def updateFS(contentDict,gdb_Source):
         # Connect to AGOL
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
         updatedDescrpt = "Updated " + str(d) + "\n GDB Version " + str(gdb_Source)
         publishParams = arcrest.manageorg.PublishFGDBParameter(
                 name=FStitle,
-                layerInfo={"serviceDescription": "Current road conditions as of " + str(d ),"capabilities":"Query","layers":[{"id":0, "name":"Current Conditions","geometryType":"esriGeometryPoint","minScale":0,"maxScale":0,"drawingInfo":{"renderer":{"type":"simple","symbol":{"type":"esriSMS","style":"esriSMSCircle","color":[0,0,0,255],"size":18,"angle":0,"xoffset":0,"yoffset":0},"label":"","description":""}}},
-                            {"id":1,"name":"Current Segment Conditions", "geometryType":"esriGeometryPolyline","minScale":0,"maxScale":320000,"drawingInfo":{"renderer":{"type":"simple","symbol":{"type":"esriSLS","style":"esriSLSSolid","color":[242,125,71,255],"width":1,"outline":{"color":[117,116,115,255],"width":1}},"label":"","description":""}}}]},
+                layerInfo=sd,
                 maxRecordCount=-1,
                 copyrightText=licenseInfo,
                 targetSR=102100)
+
+        #publishParams = arcrest.manageorg.PublishFGDBParameter(
+        #        name=FStitle,
+        #        layerInfo={"serviceDescription": "Current road conditions as of " + str(d ),"capabilities":"Query","layers":[{"id":0, "name":"Current Conditions","geometryType":"esriGeometryPoint","minScale":0,"maxScale":0,"drawingInfo":{"renderer":{"type":"simple","symbol":{"type":"esriSMS","style":"esriSMSCircle","color":[0,0,0,255],"size":18,"angle":0,"xoffset":0,"yoffset":0},"label":"","description":""}}}]},
+        #        maxRecordCount=-1,
+        #        copyrightText=licenseInfo,
+        #        targetSR=102100)
+        #publishParams = arcrest.manageorg.PublishFGDBParameter(
+        #        name=FStitle,
+        #        layerInfo={"name":"RandomPoints"},
+        #        overwrite=True,
+        #        maxRecordCount=2000,
+        #        copyrightText=licenseInfo,
+        #        description="RandomFeatureCollection",
+        #        targetSR=102100)
 
         gdbID = contentDict['File Geodatabase']
         content = org.content
         usercontent = content.usercontent(username)
         if isinstance(usercontent, manageorg.administration._content.UserContent):
                 pass
-        result = usercontent.publishItem(itemId=gdbID, fileType="fileGeodatabase", publishParameters=publishParams, overwrite=True )
+        fsID = contentDict['Feature Service']
+        deleted = 0
+        if fsID not in [None, "", " ", []]:
+            result = usercontent.deleteItem(item_id=fsID,force_delete=True)
+            deleted = 1
+
+        result = usercontent.publishItem(itemId=gdbID, fileType="fileGeodatabase", publishParameters=publishParams)
 
         listResult = result['services']
         dictResult = listResult.pop()
         publishedItemId = dictResult['serviceItemId']
+        if deleted == 1:
+            contentDict['Feature Service'] = publishedItemId
         jobId = dictResult['jobId']
 
         publishItem = content.item(itemId=publishedItemId)
@@ -346,6 +452,7 @@ def updateFS(contentDict,gdb_Source):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def updateFGDB(myContent):
     try:
@@ -354,23 +461,24 @@ def updateFGDB(myContent):
         version = None
         #Check to see which FGDB updated last. Final script will look for a folder
 ##-------------------------------------------------------------------------------
+        fGDB = fgdb1
         #This block is for testing only... switching back and forth between two sample Geodatabases
         #try:
-            #with open(syncSchedule, 'r') as GDBlog:
-                #try:
-                   #lastGDBused = int(GDBlog.readline())
-                   #if lastGDBused == 1:
-                        #fGDB = fgdb2
-                        #version = 2
-                   #elif lastGDBused == 2:
-                        #fGDB = fgdb1
-                        #version = 1
-                #except:
-                    #lastGDBused = 0
+        #    with open(syncSchedule, 'r') as GDBlog:
+        #        try:
+        #           lastGDBused = int(GDBlog.readline())
+        #           if lastGDBused == 1:
+        #                fGDB = fgdb2
+        #                version = 2
+        #           elif lastGDBused == 2:
+        #                fGDB = fgdb1
+        #                version = 1
+        #        except:
+        #            lastGDBused = 0
 
         #except IOError:
-                #with open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncSchedule.txt"),"w") as GDBlog:
-                    #GDBlog.write(str(1))
+        #        with open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncSchedule.txt"),"w") as GDBlog:
+        #            GDBlog.write(str(1))
 ##-------------------------------------------------------------------------------
         # Check to make sure the updated FileGDB zipfile exists.
         results = watchDog(fGDB)
@@ -391,8 +499,8 @@ def updateFGDB(myContent):
         itemParams.title=FStitle
         itemParams.description="Updated " + str(d) + "\n GDB Version " + str(version)
 
-        usercontent.updateItem(itemId=gdb_itemId, updateItemParameters=itemParams, filePath=fGDB, async=True, overwrite=True)
-
+        #usercontent.updateItem(itemId=gdb_itemId, updateItemParameters=itemParams, filePath=fGDB, async=True, overwrite=True)
+        usercontent.updateItem(itemId=gdb_itemId, updateItemParameters=itemParams, filePath=fGDB)
         status =  usercontent.status(itemId=gdb_itemId, jobType="update")
         print "Updating File Geodatabase"
         print status
@@ -407,14 +515,14 @@ def updateFGDB(myContent):
 ##-------------------------------------------------------------------------------
         # Temporary code for Testing To Be Removed at Final
         # Update the sync schedule file
-        if lastGDBused == 1:
-            with open(syncSchedule, 'w') as GDBlog:
-                GDBlog.write(str(2))
-                GDBlog.close()
-        else:
-            with open(syncSchedule, 'w') as GDBlog:
-                GDBlog.write(str(1))
-                GDBlog.close()
+        #if lastGDBused == 1:
+        #    with open(syncSchedule, 'w') as GDBlog:
+        #        GDBlog.write(str(2))
+        #        GDBlog.close()
+        #else:
+        #    with open(syncSchedule, 'w') as GDBlog:
+        #        GDBlog.write(str(1))
+        #        GDBlog.close()
 ##-------------------------------------------------------------------------------
         logMessage("Preparing to update " + FStitle + " Feature Service")
         updateFS(myContent, version)
@@ -430,6 +538,7 @@ def updateFGDB(myContent):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def exportFeatureCollection(fsID):
     try:
@@ -449,7 +558,7 @@ def exportFeatureCollection(fsID):
         result = usercontent.exportItem(title=FCtitle,
                                             itemId=fsID,
                                             exportFormat=fcType,
-                                            exportParameters={"layers" : [{"id" : 1},{"id" : 0}]})
+                                            exportParameters=lllyyrrss)
 
 
         exportedItemId = result['exportItemId']
@@ -492,6 +601,7 @@ def exportFeatureCollection(fsID):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def publishFeatureService(gdbID):
     try:
@@ -504,12 +614,19 @@ def publishFeatureService(gdbID):
         # Connect to AGOL
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
 
+        #publishParams = arcrest.manageorg.PublishFGDBParameter(name=FStitle,
+        #            layerInfo={"capabilities": "Query","layers": [{"id": 0,"name": "RandomPoints","geometryType": "esriGeometryPoint"}]},
+        #            description=description,
+        #            maxRecordCount=-1,
+        #            copyrightText=licenseInfo,
+        #            targetSR=102100)
+        print(description)
         publishParams = arcrest.manageorg.PublishFGDBParameter(name=FStitle,
-                    layerInfo={"capabilities": "Query","layers": [{"id": 0,"name": "CurrentConditionsAllPoints","geometryType": "esriGeometryPoint"}, {"id": 1,"name": "CurrentHighwayConditions_Line","geometryType": "esriGeometryPolyline"}]},
-                    description=description,
-                    maxRecordCount=-1,
-                    copyrightText=licenseInfo,
-                    targetSR=102100)
+            layerInfo=li,
+            description=description,
+            maxRecordCount=-1,
+            copyrightText=licenseInfo,
+            targetSR=102100)
         content = org.content
         usercontent = content.usercontent(username)
         if isinstance(usercontent, manageorg.administration._content.UserContent):
@@ -542,6 +659,7 @@ def publishFeatureService(gdbID):
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def uploadFGDB():
     try:
@@ -587,6 +705,7 @@ def uploadFGDB():
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def sync_Init():
     try:
@@ -627,10 +746,12 @@ def sync_Init():
             pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
             # Python / Python Window
             logMessage("" + pymsg)
+            print(pymsg)
 #-------------------------------------------------------------------------------
 def main():
     """ main driver of program """
     while True:
+        updateData("")
         sync_Init()
 #-------------------------------------------------------------------------------
 
