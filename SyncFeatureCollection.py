@@ -31,10 +31,6 @@ updateInterval = int(config.get('Update Interval', 'updateInterval'))* 60
 itemID = os.path.normpath(config.get('Existing ItemID', 'itemID'))
 diskSD = os.path.normpath(config.get('SD On Disk', 'diskSD'))
 
-#sd = json.loads(os.path.normpath(config.get('SD', 'sd')))
-#lllyyrrss = json.loads(os.path.normpath(config.get('LAYERS', 'l')))
-#li = json.loads(os.path.normpath(config.get('LAYER INFO', 'li')))
-
 gdbType = "File Geodatabase"
 fcType = "feature collection"
 starttime = None
@@ -213,7 +209,7 @@ def export_tempFeatureCollection(myContentDict):
         result = usercontent.exportItem(title=FCtemp,
                                     itemId=fsID,
                                     exportFormat=fcType,
-                                    exportParameters='{"serviceDescription": "Current road conditions as of ","capabilities":"Query","layers":[{"id":0, "name":"RandomPoints","geometryType":"esriGeometryPoint","minScale":0,"maxScale":0,"drawingInfo":{"renderer":{"type":"simple","symbol":{"type":"esriSMS","style":"esriSMSCircle","color":[0,0,0,255],"size":18,"angle":0,"xoffset":0,"yoffset":0},"label":"","description":""}}}]}',
+                                    exportParameters=None,
                                     wait=True)
 
         exportedItemId = result.id
@@ -331,7 +327,7 @@ def exportFeatureCollection(fsID):
         result = usercontent.exportItem(title=FCtitle,
                                             itemId=fsID,
                                             exportFormat=fcType,
-                                            exportParameters=lllyyrrss,
+                                            exportParameters=None,
                                             wait=True)
 
         # Set the itemParameters
@@ -363,7 +359,7 @@ def publishFeatureService(gdbID):
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         print(description)
         publishParams = arcrest.manageorg.PublishFGDBParameter(name=FStitle,
-            layerInfo=li,
+            layerInfo=sd,
             description=description,
             maxRecordCount=-1,
             copyrightText=licenseInfo,
