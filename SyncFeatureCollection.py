@@ -29,7 +29,6 @@ updateInterval = int(config.get('Update Interval', 'updateInterval'))* 60
 ##TODO if possible it would be nice if we could just take in the SD file from disk
 ## if we can in some way know what the name should be and find it after the inital add
 itemID = os.path.normpath(config.get('Existing ItemID', 'itemID'))
-diskSD = os.path.normpath(config.get('SD On Disk', 'diskSD'))
 
 gdbType = "File Geodatabase"
 fcType = "feature collection"
@@ -252,10 +251,11 @@ def updateFS(contentDict,gdb_Source):
             itemParams.description= updatedDescrpt
             print("Update Feature Service...")
             item.userItem.updateItem(itemParameters=itemParams, data=fgdb1)
+            updateDefinitions(item.url)
         else:
             publishParams = arcrest.manageorg.PublishFGDBParameter(
             name=FStitle,
-            layerInfo=sd,
+            layerInfo=None,
             maxRecordCount=-1,
             copyrightText=licenseInfo,
             targetSR=102100)
@@ -264,6 +264,7 @@ def updateFS(contentDict,gdb_Source):
                 pass
             print("Publish Feature Service...")
             result = usercontent.publishItem(itemId=gdbID, fileType="fileGeodatabase", publishParameters=publishParams, wait=True)
+            updateDefinitions(result.url)
 
         logMessage(FStitle + " feature service publishing complete... preparing to export to a feature collection.")
         export_tempFeatureCollection(contentDict)
@@ -359,7 +360,7 @@ def publishFeatureService(gdbID):
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         print(description)
         publishParams = arcrest.manageorg.PublishFGDBParameter(name=FStitle,
-            layerInfo=sd,
+            layerInfo=None,
             description=description,
             maxRecordCount=-1,
             copyrightText=licenseInfo,
@@ -369,12 +370,31 @@ def publishFeatureService(gdbID):
         if isinstance(usercontent, manageorg.administration._content.User):
             pass
         result = usercontent.publishItem(fileType="fileGeodatabase", publishParameters=publishParams, itemId=gdbID, wait=True)
-        print(result)
+        updateDefinitions(result.url)
         logMessage(FStitle + " feature service publishing complete... preparing to export to a feature collection.")
         exportFeatureCollection(result.item.id)
 
     except:
         showError(sys.exc_info()[2])
+
+def updateDefinitions(url):
+    sh = arcrest.AGOLTokenSecurityHandler(username, pw)
+    org = manageorg.Administration(url=baseURL, securityHandler=sh)
+    fs = arcrest.agol.services.FeatureService(url=url,
+        securityHandler=sh,
+        proxy_port=None,
+        proxy_url=None,
+        initialize=True)
+
+    idx = url.find("rest/services")
+    if idx > -1:
+        idx += 5
+        url = url[:idx] + 'admin/' + url[idx:]
+    
+    for lyr in fs.layers:
+        lyrUrl = url + "/" + str(lyr.id)
+        d = arcrest.hostedservice.AdminFeatureServiceLayer(lyrUrl, securityHandler=sh, initialize=True)
+        sfs = d.updateDefinition(drawingInfos[lyr.id])
 
 def uploadFGDB():
     try:
@@ -403,7 +423,7 @@ def uploadFGDB():
         if isinstance(usercontent, arcrest.manageorg.administration._content.User):
             pass
 
-        fs = os.path.getsize(fgdb1)
+        gdbSize = os.path.getsize(fgdb1)
 
         #TODO add check for file size...if larger than 100 MBs we should set multipart to true
         #see ArcREST _content.addItem
@@ -478,68 +498,13 @@ def getPrePublishedInfo():
         proxy_url=None,
         initialize=True)
 
-    layerIds = []
-    layerDetails = []
-    layerFullDetails = []
+    _drawingInfos = {}
+
     for lyr in fs.layers:
-        layerIds.append({"id": lyr.id})
+        _drawingInfos[lyr.id] = {"drawingInfo" : lyr.drawingInfo}
 
-        layerDetails.append({"id": lyr.id, 
-                        "name": lyr.name, 
-                        "geometryType": lyr.geometryType})
-
-        layerFullDetails.append({"id": lyr.id, 
-                    "name": lyr.name, 
-                    "geometryType": lyr.geometryType,
-                    "minScale": lyr.minScale,
-                    "maxScale": lyr.maxScale,
-                    "drawingInfo": lyr.drawingInfo})
-
-    #l: {"layers":[{"id":0}]}
-    _l = OrderedDict
-    _l = ("layers", layerIds)
-    global lllyyrrss
-    lllyyrrss = json.dumps(_l)
-    
-    #li: {"capabilities": "Query","layers": [
-    #{"id": 0,"name": "RandomPoints","geometryType": "esriGeometryPoint"}
-    #]}
-    _li = OrderedDict([("capabilities", fs.capabilities),
-    ("layers", layerDetails)])
-    global li
-    li = json.dumps(_li)
-    
-    #sd: {"serviceDescription": "Current road conditions as of ",
-    #"capabilities":"Query",
-    #"layers":[
-    #{"id":0, 
-    #"name":"RandomPoints",
-    #"geometryType":"esriGeometryPoint",
-    #"minScale":0,
-    #"maxScale":0,
-    #"drawingInfo":{
-        #"renderer":{
-            #"type":"simple",
-            #"symbol":{
-                #"type":"esriSMS",
-                #"style":"esriSMSCircle",
-                #"color":[0,0,0,255],
-                #"size":18,
-                #"angle":0,
-                #"xoffset":0,
-                #"yoffset":0},
-                #"label":"",
-                #"description":""}}}]}
-
-    _sd = OrderedDict([("serviceDescription", fs.serviceDescription),
-    ("capabilities", fs.capabilities),
-    ("layers", layerFullDetails)])
-    global sd
-    sd = json.dumps(_sd)
-    print("test")
-
-def uploadSD():
-    print("Handle Add/Update SD from disk here")
+    global drawingInfos
+    drawingInfos = _drawingInfos
 
 def main():
     getPrePublishedInfo()
