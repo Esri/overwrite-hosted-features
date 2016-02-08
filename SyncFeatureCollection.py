@@ -212,10 +212,14 @@ def export_tempFeatureCollection():
         usercontent = content.users.user(username)
         if isinstance(usercontent, manageorg.administration._content.User):
             pass
+        
+        expLayers = []
+        for k in updateLayers.keys():
+            expLayers.append({'id' : k})
+        expParams = {'layers': expLayers}
 
-        expParams = None
-        if enableQuantization:
-            expParams = {"maxAllowableOffset":maxAllowableOffset,"quantizationParameters":{"tolerance":tolerance}}
+        #if enableQuantization:
+        #    expParams = {"maxAllowableOffset":maxAllowableOffset,"quantizationParameters":{"tolerance":tolerance}}
 
         result = usercontent.exportItem(title=FCtemp,
                                     itemId=featureServiceItemID,
@@ -313,24 +317,22 @@ def updateProductionFS(url):
         proxy_url=None,
         initialize=True)
 
+    global updateLayers
     updateLayers = {}
     for lyr in productionFS.layers:
         production_id = None
         update_id = None
         for nv_pair in nameMapping:
-            print(nv_pair)
             if nv_pair[0] == lyr.name:
                 production_id = lyr.id
                 break
         for update_layer in updateFS.layers:
-            print(nv_pair)
             if nv_pair[1] == update_layer.name:
                 update_id = update_layer.id
                 updateLayers[production_id] = update_id
                 break
 
     del(updateFS)
-    print(updateLayers)
 
     for lyr in productionFS.layers:
         lyrUrl = url + "/" + str(updateLayers[lyr.id])
@@ -342,7 +344,6 @@ def updateProductionFS(url):
         lyr.deleteFeatures(where="1=1")
 
         result = updatedFL.query(where='1=1', returnIDsOnly=True)
-        print(result)
         if 'error' in result:
             print(result)
             return result
@@ -351,7 +352,7 @@ def updateProductionFS(url):
             oids = result['objectIds']
             total = len(oids)
             if len(oids) > chunksize:
-                print ("%s features to be downloaded" % total)
+                print ("{0} features to be downloaded for {1} layer".format(total, lyr.name))
                 totalQueried = 0
                 for chunk in chunklist(l=oids, n=chunksize):
                     oidsQuery = ",".join(map(str, chunk))
@@ -409,7 +410,7 @@ def uploadFGDB():
 
 def sync_Init():
     try:
-        loggingStart("Syncronize " + baseName + " Web Application with updated data")
+        loggingStart("Syncronize " + baseName + " with updated data")
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         result = org.search(baseName,bbox = None)
         keyset = ['results']
@@ -530,10 +531,15 @@ def main():
 
     global sh
     sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
-    
-    getPrePublishedInfo()
-    setBaseName(fgdb1)
-    sync_Init()
+
+    if sh.valid:
+        getPrePublishedInfo()
+        setBaseName(fgdb1)
+        sync_Init()
+    else:
+        for v in sh.message:
+            print(v)
+        exit
 
 if __name__ == "__main__":
     try:
