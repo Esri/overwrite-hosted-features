@@ -13,40 +13,36 @@ else:
 
 ## Migrated to ArcREST 3.5.1
 
+#TODO need to gracefully handle when these are not specified or if they have incorrect return values
+
 ##Lessons Learned...if the FGDB ItemTitle does not match the base FGDB Name then publishing from the FGDB fails
 
-config = ConfigParser()
-config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
-syncSchedule = os.path.normpath(config.get('Log File Location', 'syncSchedule'))
-syncLOG = os.path.normpath(config.get('Log File Location', 'syncLog'))
-fgdb1 = os.path.normpath(config.get('Data Sources', 'fgdb'))
-jsonExport = os.path.normpath(config.get('JSON Export', 'jsonExport'))
-baseURL = config.get('Portal Sharing URL', 'baseURL') + "sharing/rest"
-username = config.get('Portal Credentials', 'username')
-pw = config.get('Portal Credentials', 'pw')
-enableQuantization = config.get('Quantization', 'enableQuantization')
-maxAllowableOffset = config.get('Quantization', 'maxAllowableOffset')
-tolerance = config.get('Quantization', 'tolerance')
-itemID = os.path.normpath(config.get('Existing ItemID', 'itemID'))
-
-gdbType = "File Geodatabase"
 fcType = "feature collection"
 starttime = None
 
-sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
+def validateInput(config, group, name, type, required):
+    #TODO extend this to include extra validation that we can find IDs and whatnot
+    try:
+        #TODO if this just errors when the value is not supplied 
+        value = config.get(group, name)
+        if(type == 'path'):
+            return os.path.normpath(value)
+        else:
+            return value
+    except:
+        if required:
+            showError(sys.exc_info()[2])  
+        else:
+            if type == 'bool':
+                return False
+            else:
+                return None
 
-#TODO
-# should pull the SR from the prepublished item
-
-def setAppName(gdbZip):
+def setBaseName(gdbZip):
     n = os.path.splitext(os.path.basename(gdbZip))[0]
     if n.find('.gdb'):
         global baseName
         baseName = os.path.splitext(n)[0]
-        global FStitle
-        FStitle = baseName
-        global FCtitle
-        FCtitle = baseName
         global FCtemp 
         FCtemp = baseName + "_temp"
 
@@ -63,7 +59,6 @@ def trace():
     # script name + line number
     line = tbinfo.split(", ")[1]
     # Get Python syntax error
-    #
     synerror = traceback.format_exc().splitlines()[-1]
     return line, __file__, synerror
 
@@ -102,7 +97,6 @@ def loggingEnd(endingProcess):
         log.close()
 
 def watchDog(file_Name, attempts=0, timeout=5, sleep_int=5, total_Attempts=5):
-
     if attempts < timeout and os.path.exists(file_Name) and os.path.isfile(file_Name):
         try:
             results = os.path.exists(file_Name)
@@ -114,7 +108,7 @@ def watchDog(file_Name, attempts=0, timeout=5, sleep_int=5, total_Attempts=5):
                 sleep(sleep_int)
                 watchDog(file_Name, attempts + 1)
             else:
-                logMessage(FStitle + " File Geodatabase Zip file does not exist at " + os.path.dirname(os.path.repalpath(file_Name)))
+                logMessage(baseName + " File Geodatabase Zip file does not exist at " + os.path.dirname(os.path.repalpath(file_Name)))
 
 def showError(tb):
     tbinfo = traceback.format_tb(tb)[0]
@@ -122,17 +116,19 @@ def showError(tb):
     logMessage("" + pymsg)
     print(pymsg)
 
-def updateProductionFC(productionDict, tempFC_ID):
+def chunklist(l, n):
+    n = max(1, n)
+    for i in range(0, len(l), n):
+        yield l[i:i+n]
+
+def updateProductionFC(tempFC_ID):
     try:
         #Start Logging
         logMessage("Update " + FCtitle + " production feature collection")
-
-        #Update Logic Begins here...
-        #sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
+        
         admin = manageorg.Administration(url=baseURL, securityHandler=sh)
-        gdb_itemId = productionDict['Feature Collection']
         content = admin.content
-        item = content.getItem(gdb_itemId)
+        item = content.getItem(featureCollectionItemID)
         usercontent = content.users.user(username)
 
         #Get JSON file to be passed into the production Feature Collection.
@@ -180,20 +176,14 @@ def updateProductionFC(productionDict, tempFC_ID):
     except:
         showError(sys.exc_info()[2])
 
-def export_tempFeatureCollection(myContentDict):
+def export_tempFeatureCollection():
     try:
         #Start Logging
         logMessage("Exporting " + FCtemp + " temporary feature collection")
 
-        # Publish FS Logic
-        # Create security handler
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
-        # Connect to AGOL
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         content = org.content
         usercontent = content.users.user(username)
-        #Get the Updated Feature Service item id
-        fsID = itemID
         if isinstance(usercontent, manageorg.administration._content.User):
             pass
 
@@ -202,7 +192,7 @@ def export_tempFeatureCollection(myContentDict):
             expParams = {"maxAllowableOffset":maxAllowableOffset,"quantizationParameters":{"tolerance":tolerance}}
 
         result = usercontent.exportItem(title=FCtemp,
-                                    itemId=fsID,
+                                    itemId=featureServiceItemID,
                                     exportFormat=fcType,
                                     exportParameters=expParams,
                                     wait=True)
@@ -223,178 +213,76 @@ def export_tempFeatureCollection(myContentDict):
 
         #Temporary Feature Collection created and new data captured
         logMessage(FCtemp + " created... preparing to update production" + FCtitle + " feature collection.")
-        updateProductionFC(myContentDict, exportedItemId)
+        updateProductionFC(exportedItemId)
     except:
         showError(sys.exc_info()[2])
 
-def updateFS(contentDict,gdb_Source):
+def deleteFGDB(myContent):
     try:
-        logMessage("Updating " + FStitle + " Feature Service with data from " + FStitle + " File Geodatabase")
+        logMessage("Removing  " + baseName + " File Geodatabase.")
 
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
-        content = org.content
-
-        d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        updatedDescrpt = "Updated " + str(d) + "\n GDB Version " + str(gdb_Source)
-
-        gdbID = contentDict['File Geodatabase']
-
-        if 'Feature Service' in contentDict:
-            fsID = contentDict['Feature Service']
-            item = content.getItem(fsID)
-            itemParams = manageorg.ItemParameter()
-            itemParams.title=FStitle
-            itemParams.description= updatedDescrpt
-            print("Update Feature Service...")
-            item.userItem.updateItem(itemParameters=itemParams, data=fgdb1)
-        else:
-            publishParams = arcrest.manageorg.PublishFGDBParameter(
-            name=FStitle,
-            layerInfo=None,
-            maxRecordCount=-1,
-            copyrightText=licenseInfo,
-            targetSR=102100)
-            usercontent = content.users.user(username)
-            if isinstance(usercontent, manageorg.administration._content.User):
-                pass
-            print("Publish Feature Service...")
-            result = usercontent.publishItem(itemId=gdbID, fileType="fileGeodatabase", publishParameters=publishParams, wait=True)
-
-        logMessage(FStitle + " feature service publishing complete... preparing to export to a feature collection.")
-        export_tempFeatureCollection(contentDict)
-
-    except:
-        showError(sys.exc_info()[2])
-
-def updateFGDB(myContent):
-    try:
-        #Log startup message
-        logMessage("Updating " + FStitle + " File Geodatabase item with new data")
-        version = None
-
-        fGDB = fgdb1
-
-        # Check to make sure the updated FileGDB zipfile exists.
-        results = watchDog(fGDB)
-        if results == True:
-            logMessage("Located " + FStitle + " file geodatabase, continuing the update.")
-
-        # Update Logic Begins here...
-        #sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
         admin = manageorg.Administration(url=baseURL, securityHandler=sh)
         gdb_itemId = myContent['File Geodatabase']
-        content = admin.content
-        item = content.getItem(gdb_itemId)
+        item = admin.content.getItem(gdb_itemId)
         usercontent = content.users.user(username)
+        result = usercontent.deleteItems(items=gdb_itemId)
 
-        d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        itemParams = manageorg.ItemParameter()
-        itemParams.title=FStitle
-        itemParams.description="Updated " + str(d) + "\n GDB Version " + str(version)
-
-        status = item.userItem.updateItem(itemParameters=itemParams, data=fGDB)
-        print("Updating File Geodatabase")
-
-        logMessage(FStitle + "File Geodatabase Updated!")
-        logMessage("Preparing to update " + FStitle + " Feature Service")
-        #updateFS(myContent, version)
-        publishTempFeatureService(gdb_itemId, myContent, version)
-
-    except:
-        showError(sys.exc_info()[2])
-
-def exportFeatureCollection(fsID):
-    try:
-        #Start Logging
-        logMessage("Exporting " + FStitle + " feature service to a feature collection")
-        print("Exporting " + FStitle + " feature service to a feature collection")
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
-        # Connect to AGOL
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
-
-        content = org.content
-        usercontent = content.users.user(username)
-        if isinstance(usercontent, manageorg.administration._content.User):
-            pass
-
-        expParams = None
-        if enableQuantization:
-            expParams = {"maxAllowableOffset":maxAllowableOffset,"quantizationParameters":{"tolerance":tolerance}}
-
-        result = usercontent.exportItem(title=FCtitle,
-                                            itemId=fsID,
-                                            exportFormat=fcType,
-                                            exportParameters=expParams,
-                                            wait=True)
-
-        # Set the itemParameters
-        itemParams = manageorg.ItemParameter()
-        itemParams.title = FCtitle
-        itemParams.tags = tags
-        itemParams.thumbnail = thumbnail
-        itemParams.description = description
-        itemParams.snippet = snippet
-        itemParams.licenseInfo = licenseInfo
-
-        productionFC = result.updateItem(itemParameters=itemParams)
-
-        if 'success' in productionFC:
-            logMessage(FCtitle + " feature collection created.")
-            loggingEnd("Feature Collection Data Upload Complete!")
-            exit
+        if 'error' in result:
+            print(result)
         else:
-            exit
+            logMessage(baseName + " File Geodatabase removed.")
     except:
         showError(sys.exc_info()[2])
+
+def clearTempContent():
+    org = arcrest.manageorg.Administration(url=baseURL, securityHandler=sh)
+    content = org.content
+    usercontent = content.users.user(username)
+    #TODO verify that this has a value
+    #gdbItem = content.getItem(itemId=gdbID)
+    #usercontent.deleteItems(items=gdbItem)
 
 def publishTempFeatureService(gdbID, myContent, version):
     try:
-        logMessage("Publishing temp " + FStitle + "feature service")
-        print("Publishing temp " + FStitle + "feature service")
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
+        logMessage("Publishing temp " + baseName + "feature service")
+
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
 
-        publishParams = arcrest.manageorg.PublishFGDBParameter(name=FStitle,
+        publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
             layerInfo=None,
             description=description,
             maxRecordCount=-1,
             copyrightText=licenseInfo,
-            targetSR=102100)
+            targetSR=SR)
 
         content = org.content
         usercontent = content.users.user(username)
         if isinstance(usercontent, manageorg.administration._content.User):
             pass
-        result = usercontent.publishItem(fileType="fileGeodatabase", publishParameters=publishParams, itemId=gdbID, wait=True)
-
+        result = usercontent.publishItem(fileType="fileGeodatabase", 
+                                         publishParameters=publishParams, 
+                                         itemId=gdbID, 
+                                         wait=True)
+        print(result.url)
         updateProductionFS(result.url)
         usercontent.deleteItems(items=result.id)
 
-        logMessage(FStitle + " feature service publishing complete... preparing to export to a feature collection.")
+        logMessage(baseName + " feature service publishing complete... preparing to export to a feature collection.")
 
-        if myContent != None:
-            export_tempFeatureCollection(myContent)
-        else:
-            exportFeatureCollection(itemID)
-
+        export_tempFeatureCollection()
     except:
         showError(sys.exc_info()[2])
 
 def updateProductionFS(url):
-    #sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
-    admin = manageorg.Administration(url=baseURL, securityHandler=sh)
-    content = admin.content
-    item = content.getItem(itemId=itemID)
-
-    productionFS = arcrest.agol.services.FeatureService(url=item.url,
+    logMessage("Preparing to update " + productionFSName)
+    productionFS = arcrest.agol.services.FeatureService(url=productionURL,
         securityHandler=sh,
         proxy_port=None,
         proxy_url=None,
         initialize=True)
 
     for lyr in productionFS.layers:
+        #TODO need to handle name map here 
         lyrUrl = url + "/" + str(lyr.id)
         updatedFL = arcrest.agol.services.FeatureLayer(url=lyrUrl,
             securityHandler=sh,
@@ -402,36 +290,51 @@ def updateProductionFS(url):
             proxy_url=None,
             initialize=True)
         lyr.deleteFeatures(where="1=1")
-        featureSet = updatedFL.query(where="1=1",out_fields="*",returnGeometry=True)
-        lyr.applyEdits(addFeatures=featureSet.features)
 
-    #itemParams = manageorg.ItemParameter()
-    #itemParams.title=FStitle
-    #itemParams.description= "NEW DESC"
-    #print("!!!Update Feature Service...")
-    #item.userItem.updateItem(itemParameters=itemParams, data=fgdb1)
-
+        result = updatedFL.query(where='1=1', returnIDsOnly=True)
+        print(result)
+        if 'error' in result:
+            print(result)
+            return result
+        else:
+            chunksize = min(lyr.maxRecordCount, updatedFL.maxRecordCount)
+            oids = result['objectIds']
+            total = len(oids)
+            if len(oids) > chunksize:
+                print ("%s features to be downloaded" % total)
+                totalQueried = 0
+                for chunk in chunklist(l=oids, n=chunksize):
+                    oidsQuery = ",".join(map(str, chunk))
+                    if not oidsQuery:
+                        continue
+                    else:
+                        results = updatedFL.query(objectIds=oidsQuery,
+                                            returnGeometry=True,
+                                            out_fields="*")
+                        if isinstance(results, arcrest.common.general.FeatureSet):
+                            lyr.applyEdits(addFeatures=results.features)
+                            totalQueried += len(results.features)
+                            print("{:.0%} Completed: {}/{}".format(totalQueried / float(total), totalQueried, total))
+                        else:
+                            print (results)
+            else:
+                results = updatedFL.query(objectIds=oidsQuery,
+                                          returnGeometry=True,
+                                          out_fields="*")
+                lyr.applyEdits(addFeatures=results.features)
+    logMessage(productionFSName + " updated sucessfully!")
 
 def uploadFGDB():
     try:
-        # Log Step
-        logMessage("Uploading " + FStitle + " File Geodatabase")
-        print("Uploading " + FStitle + " File Geodatabase")
-        # Sync Logic
-        # Create security handler
-        # Set the itemParameters
+        logMessage("Uploading " + baseName + " File Geodatabase")
+
         itemParams = arcrest.manageorg.ItemParameter()
-        itemParams.title = FStitle #this name should be derived from the fGDB
-        itemParams.type = gdbType
+        itemParams.title = baseName #this name should be derived from the fGDB
+        itemParams.type = "File Geodatabase"
         itemParams.tags = tags
         itemParams.typeKeywords = "Data,File Geodatabase"
-        #itemParams.overwrite = "false",
 
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
-        # Connect to AGOL
         org = arcrest.manageorg.Administration(url=baseURL, securityHandler=sh)
-
-        # Grab the user's content (items)
         content = org.content
         usercontent = content.users.user(username)
         if isinstance(usercontent, arcrest.manageorg.administration._content.User):
@@ -443,22 +346,20 @@ def uploadFGDB():
         #see ArcREST _content.addItem
         result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb1)
 
-        fgdb_itemID = result.id
-        logMessage(FStitle + " File Geodatabase upload completed... preparing to publish as a feature service.")
-        #publishFeatureService(fgdb_itemID)
-        publishTempFeatureService(fgdb_itemID, None, None)
+        global gdbID
+        gdbID = result.id
+
+        logMessage(baseName + " File Geodatabase upload completed... preparing to publish as a feature service.")
+        publishTempFeatureService(result.id, None, None)
+
+        usercontent.deleteItems(items=result.id)
 
     except:
         showError(sys.exc_info()[2])
 
 def sync_Init():
     try:
-        # Start Logging
         loggingStart("Syncronize " + baseName + " Web Application with updated data")
-        # Check to see if File Geodatabase, Feature Service and Feature
-        # Collection have been previously uploaded.
-        #sh = arcrest.AGOLTokenSecurityHandler(username, pw)
-        # Connect to AGOL
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         result = org.search(baseName,bbox = None)
         keyset = ['results']
@@ -469,29 +370,41 @@ def sync_Init():
                 value = result[key]
                 if (value == []):
                     print("The query for " + baseName.replace(" ","") + " came up with no results")
-                    #Launch Uploader routine...
                     uploadFGDB()
                 else:
                     existingTitles = [d['title'] for d in value]
                     existingIDs =[d['id'] for d in value]
                     existingTypes =[d['type'] for d in value]
-                    dictionary = dict(zip(existingTypes, existingIDs))
-                    #Launch Update routine...
-                    if "Feature Collection" in dictionary:
-                        updateFGDB(dictionary)
+                    existingItems = dict(zip(existingTypes, existingIDs))
+                    if "File Geodatabase" in existingItems:
+                        deleteFGDB(existingItems)
+                        uploadFGDB()
                     else:
-                        print("The query for " + baseName.replace(" ","") + " came up with no Feature Collection results")
-                        #Launch Uploader routine...
+                        print("The query for " + baseName.replace(" ","") + " came up with no File Geodatabase results")
                         uploadFGDB()
 
     except:
         showError(sys.exc_info()[2])
 
 def getPrePublishedInfo():
-    #sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
     admin = manageorg.Administration(url=baseURL, securityHandler=sh)
     content = admin.content
-    item = content.getItem(itemId=itemID)
+
+    #TODO test when this item ID does not exist or returns an unexpected type and handle gracefully
+    item = content.getItem(itemId=featureServiceItemID)
+    if 'error' in item:
+        print(item)
+        exit
+
+    #GET details from the prepublished feature service
+    global productionURL
+    productionURL = item.url
+
+    global productionFSName
+    productionFSName = item.name
+
+    global SR
+    SR = item.spatialReference
 
     #TODO only do this on an inital publish...otherwise if the user modified the values on the production FC they would be overwitten by what'sin the Feature Service
     global thumbnail
@@ -508,10 +421,74 @@ def getPrePublishedInfo():
     global licenseInfo
     licenseInfo = str(item.licenseInfo)
 
+    #GET the prepublished feature collection name
+    fcItem = content.getItem(itemId=featureCollectionItemID)
+    if 'error' in fcItem:
+        print(fcItem)
+        exit
+
+    global FCtitle
+    FCtitle = fcItem.name
+
+def readConfig():
+    
+    config = ConfigParser()
+
+    try:
+        config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
+    except:
+        logMessage("Error loading configuration file: " + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg'))
+        showError(sys.exc_info()[2]) 
+    global syncLOG
+    syncLOG = validateInput(config, 'Log File Location', 'syncLog', 'path', True)
+
+    global fgdb1
+    fgdb1 = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
+
+    global jsonExport
+    jsonExport = validateInput(config, 'JSON Export', 'jsonExport', 'path', True)
+
+    global baseURL
+    baseURL = validateInput(config, 'Portal Sharing URL', 'baseURL', 'url', True) + "sharing/rest"
+
+    global username
+    username = validateInput(config, 'Portal Credentials', 'username', 'string', True)
+
+    global pw
+    pw = validateInput(config, 'Portal Credentials', 'pw', 'string', True)
+
+    global enableQuantization
+    enableQuantization = validateInput(config, 'Quantization', 'enableQuantization', 'bool', False)
+
+    global maxAllowableOffset
+    maxAllowableOffset = validateInput(config, 'Quantization', 'maxAllowableOffset', 'int', False)
+
+    global tolerance
+    tolerance = validateInput(config, 'Quantization', 'tolerance', 'int', False)
+
+    global featureServiceItemID
+    featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
+
+    global featureCollectionItemID
+    featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
+
+    global nameMapping
+    nameMapping = validateInput(config, 'Layer Name Mapping', 'nameMapping', 'mapping', False)
+
 def main():
+    readConfig()
+
+    global sh
+    sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
+    
     getPrePublishedInfo()
-    setAppName(fgdb1)
+    setBaseName(fgdb1)
     sync_Init()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except:
+        print("should check the temp IDs here and cleanup anything that's left over")
+    finally:
+        clearTempContent()
