@@ -25,8 +25,18 @@ def validateInput(config, group, name, type, required):
     try:
         #TODO if this just errors when the value is not supplied 
         value = config.get(group, name)
-        if(type == 'path'):
+        if type == 'path':
             return os.path.normpath(value)
+        elif type == 'mapping':
+            if value.find(',') > -1:
+                if value.find(';') > -1:
+                    #multiple layer/feature class names
+                    return list(v.split(',') for v in value.split(';'))
+                else:
+                    #single layer/feature class name
+                    return value.split(',')
+            else:
+                print('Unable to parse name mapping')
         else:
             return value
     except:
@@ -66,7 +76,21 @@ def loggingStart(currentProcess):
     # Logging Logic
         global starttime
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log = open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncLog", "SyncLog.txt"),"a")
+
+        #TODO this should be handled as a part of validation logic...if it doens't exist create it
+        fileNameSpecified = os.path.basename(syncLOG).find(".txt") > -1
+
+        logfileLocation = os.path.abspath(os.path.dirname(syncLOG))
+        if not os.path.exists(logfileLocation):
+            os.makedirs(logfileLocation)
+
+        #os.path.abspath(os.path.dirname(__file__)), "SyncLog"
+        if fileNameSpecified:
+            path = syncLOG
+        else:
+            path = os.path.join(syncLog, "SyncLog.txt")
+        log = open(path,"a")
+    
         log.write("----------------------------" + "\n")
         log.write("----------------------------" + "\n")
         log.write("Log: " + str(d) + "\n")
@@ -281,9 +305,33 @@ def updateProductionFS(url):
         proxy_url=None,
         initialize=True)
 
+    updateFS = arcrest.agol.services.FeatureService(url=url,
+        securityHandler=sh,
+        proxy_port=None,
+        proxy_url=None,
+        initialize=True)
+
+    updateLayers = {}
     for lyr in productionFS.layers:
-        #TODO need to handle name map here 
-        lyrUrl = url + "/" + str(lyr.id)
+        production_id = None
+        update_id = None
+        for nv_pair in nameMapping:
+            print(nv_pair)
+            if nv_pair[0] == lyr.name:
+                production_id = lyr.id
+                break
+        for update_layer in updateFS.layers:
+            print(nv_pair)
+            if nv_pair[1] == update_layer.name:
+                update_id = update_layer.id
+                updateLayers[production_id] = update_id
+                break
+
+    del(updateFS)
+    print(updateLayers)
+
+    for lyr in productionFS.layers:
+        lyrUrl = url + "/" + str(updateLayers[lyr.id])
         updatedFL = arcrest.agol.services.FeatureLayer(url=lyrUrl,
             securityHandler=sh,
             proxy_port=None,
@@ -318,7 +366,7 @@ def updateProductionFS(url):
                         else:
                             print (results)
             else:
-                results = updatedFL.query(objectIds=oidsQuery,
+                results = updatedFL.query(where="1=1",
                                           returnGeometry=True,
                                           out_fields="*")
                 lyr.applyEdits(addFeatures=results.features)
