@@ -89,6 +89,8 @@ def loggingStart(currentProcess):
             path = syncLOG
         else:
             path = os.path.join(syncLog, "SyncLog.txt")
+        global logPath
+        logPath = path
         log = open(path,"a")
     
         log.write("----------------------------" + "\n")
@@ -104,7 +106,7 @@ def loggingStart(currentProcess):
 def logMessage(myMessage):
         # Close out the log file
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log = open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncLog", "SyncLog.txt"),"a")
+        log = open(logPath,"a")
         log.write("     " + str(d) + " - " +myMessage + "\n")
         log.close()
         print("     " + str(d) + " - " +myMessage + "\n")
@@ -112,7 +114,7 @@ def logMessage(myMessage):
 def loggingEnd(endingProcess):
         # Close out the log file
         global starttime
-        log = open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "SyncLog", "SyncLog.txt"),"a")
+        log = open(logPath,"a")
         endtime = datetime.datetime.now()
          # Process Completed...
         log.write("     " + str(endtime.strftime('%Y-%m-%d %H:%M:%S')) + " - " + endingProcess + " completed successfully!"
