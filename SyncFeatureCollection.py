@@ -1,4 +1,4 @@
-import datetime, json, os, sys, subprocess, time, traceback, uuid, urllib, zipfile, json
+﻿import datetime, json, os, sys, subprocess, time, traceback, uuid, urllib, zipfile, json
 from subprocess import Popen
 from arcrest import manageorg
 import arcrest
@@ -19,6 +19,10 @@ else:
 
 fcType = "feature collection"
 starttime = None
+tempFeatureCollectionItemID = None
+tempFeatureServiceItemID = None
+sh = None
+baseURL = None
 
 def validateInput(config, group, name, type, required):
     #TODO extend this to include extra validation that we can find IDs and whatnot
@@ -29,14 +33,11 @@ def validateInput(config, group, name, type, required):
             return os.path.normpath(value)
         elif type == 'mapping':
             if value.find(',') > -1:
-                if value.find(';') > -1:
-                    #multiple layer/feature class names
-                    return list(v.split(',') for v in value.split(';'))
-                else:
-                    #single layer/feature class name
-                    return value.split(',')
+                return list(v.split(',') for v in value.split(';'))
             else:
                 print('Unable to parse name mapping')
+        elif type == 'bool':
+            return value.lower() == 'true'
         else:
             return value
     except:
@@ -72,7 +73,7 @@ def trace():
     synerror = traceback.format_exc().splitlines()[-1]
     return line, __file__, synerror
 
-def loggingStart(currentProcess):
+def loggingStart():
     # Logging Logic
         global starttime
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -99,8 +100,7 @@ def loggingStart(currentProcess):
         log.write("\n")
         # Start process...
         starttime = datetime.datetime.now()
-        log.write("Begin "+ baseName + " Data Sync:\n")
-        log.write("     " + str(starttime.strftime('%Y-%m-%d %H:%M:%S')) +" - " + currentProcess + "\n")
+        log.write("Begin Data Sync:\n")
         log.close()
 
 def logMessage(myMessage):
@@ -147,7 +147,7 @@ def chunklist(l, n):
     for i in range(0, len(l), n):
         yield l[i:i+n]
 
-def updateProductionFC(tempFC_ID):
+def updateProductionFC():
     try:
         #Start Logging
         logMessage("Update " + FCtitle + " production feature collection")
@@ -163,7 +163,7 @@ def updateProductionFC(tempFC_ID):
             with open(jsonExport, 'r') as layerDef:
                 updatedFeatures = layerDef.readline()
         else:
-            exportItem = content.getItem(itemId=tempFC_ID)
+            exportItem = content.getItem(itemId=tempFeatureCollectionItemID)
             updatedFeatures = exportItem.itemData(f="json")
 
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -183,7 +183,7 @@ def updateProductionFC(tempFC_ID):
 
         if result['success'] is True:
             #delete temporary Feature Content
-            temporaryItem = content.getItem(itemId=tempFC_ID)
+            temporaryItem = content.getItem(itemId=tempFeatureCollectionItemID)
             delResults = usercontent.deleteItems(items=temporaryItem.id)
 
             response = delResults['results'].pop(-1)
@@ -215,11 +215,12 @@ def export_tempFeatureCollection():
         
         expLayers = []
         for k in updateLayers.keys():
-            expLayers.append({'id' : k})
+            layerDict = {'id' : k}
+            layerDict.update({"maxAllowableOffset":maxAllowableOffset})
+            #if enableGeneralization:
+            #    layerDict.update({"quantizationParameters":{"tolerance":tolerance}})
+            expLayers.append(layerDict)
         expParams = {'layers': expLayers}
-
-        #if enableQuantization:
-        #    expParams = {"maxAllowableOffset":maxAllowableOffset,"quantizationParameters":{"tolerance":tolerance}}
 
         result = usercontent.exportItem(title=FCtemp,
                                     itemId=featureServiceItemID,
@@ -227,14 +228,15 @@ def export_tempFeatureCollection():
                                     exportParameters=expParams,
                                     wait=True)
 
-        exportedItemId = result.id
+        global tempFeatureCollectionItemID
+        tempFeatureCollectionItemID = result.id
         ##TODO see if I can get the itemData as JSON like below
-        exportItem = content.getItem(itemId=exportedItemId)
+        exportItem = content.getItem(itemId=tempFeatureCollectionItemID)
 
         #Export Temporary Feature Collection as in memory JSON response
         #jsonExport = exportItem.itemData(f="json")
         token = sh.token
-        url = baseURL + "/content/items/" + exportedItemId + "/data?token=" + token + "&f=json"
+        url = baseURL + "/content/items/" + tempFeatureCollectionItemID + "/data?token=" + token + "&f=json"
         
         if vi == 2:
             response = urllib.urlretrieve(url, jsonExport)
@@ -243,7 +245,7 @@ def export_tempFeatureCollection():
 
         #Temporary Feature Collection created and new data captured
         logMessage(FCtemp + " created... preparing to update production" + FCtitle + " feature collection.")
-        updateProductionFC(exportedItemId)
+        updateProductionFC()
     except:
         showError(sys.exc_info()[2])
 
@@ -251,10 +253,10 @@ def deleteFGDB(myContent):
     try:
         logMessage("Removing  " + baseName + " File Geodatabase.")
 
-        admin = manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = manageorg.Administration(url=baseURL, securityHandler=sh)
         gdb_itemId = myContent['File Geodatabase']
-        item = admin.content.getItem(gdb_itemId)
-        usercontent = content.users.user(username)
+        item = org.content.getItem(gdb_itemId)
+        usercontent = org.content.users.user(username)
         result = usercontent.deleteItems(items=gdb_itemId)
 
         if 'error' in result:
@@ -265,16 +267,30 @@ def deleteFGDB(myContent):
         showError(sys.exc_info()[2])
 
 def clearTempContent():
-    org = arcrest.manageorg.Administration(url=baseURL, securityHandler=sh)
-    content = org.content
-    usercontent = content.users.user(username)
-    #TODO verify that this has a value
-    #gdbItem = content.getItem(itemId=gdbID)
-    #usercontent.deleteItems(items=gdbItem)
+    #Remove any temp items that were not cleaned up due to failures in the script
+    if baseURL is not None or sh is not None:
+        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+        content = org.content
+        usercontent = content.users.user(username)
+        
+        if gdbItemID is not None:
+            gdbItem = content.getItem(itemId=gdbItemID)
+            if gdbItem.id is not None:
+                usercontent.deleteItems(items=gdbItem.id)
+        
+        if tempFeatureServiceItemID is not None:
+            fsItem = content.getItem(itemId=tempFeatureServiceItemID)
+            if fsItem.id is not None:
+                usercontent.deleteItems(items=fsItem.id)
+
+        if tempFeatureCollectionItemID is not None:
+            fcItem = content.getItem(itemId=tempFeatureCollectionItemID)
+            if fcItem.id is not None:
+                usercontent.deleteItems(items=fcItem.id)
 
 def publishTempFeatureService(gdbID, myContent, version):
     try:
-        logMessage("Publishing temp " + baseName + "feature service")
+        logMessage("Publishing temp " + baseName + " feature service")
 
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
 
@@ -294,8 +310,11 @@ def publishTempFeatureService(gdbID, myContent, version):
                                          itemId=gdbID, 
                                          wait=True)
         print(result.url)
+        global tempFeatureServiceItemID
+        tempFeatureServiceItemID = result.id
+
         updateProductionFS(result.url)
-        usercontent.deleteItems(items=result.id)
+        usercontent.deleteItems(items=tempFeatureServiceItemID)
 
         logMessage(baseName + " feature service publishing complete... preparing to export to a feature collection.")
 
@@ -397,20 +416,21 @@ def uploadFGDB():
         #see ArcREST _content.addItem
         result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb1)
 
-        global gdbID
-        gdbID = result.id
+        global gdbItemID
+        gdbItemID = result.id
 
         logMessage(baseName + " File Geodatabase upload completed... preparing to publish as a feature service.")
-        publishTempFeatureService(result.id, None, None)
 
-        usercontent.deleteItems(items=result.id)
+        publishTempFeatureService(gdbItemID, None, None)
+
+        usercontent.deleteItems(items=gdbItemID)
 
     except:
         showError(sys.exc_info()[2])
 
 def sync_Init():
     try:
-        loggingStart("Syncronize " + baseName + " with updated data")
+        logMessage("Syncronize " + baseName + " with updated data")
         org = manageorg.Administration(url=baseURL, securityHandler=sh)
         result = org.search(baseName,bbox = None)
         keyset = ['results']
@@ -441,11 +461,11 @@ def getPrePublishedInfo():
     admin = manageorg.Administration(url=baseURL, securityHandler=sh)
     content = admin.content
 
-    #TODO test when this item ID does not exist or returns an unexpected type and handle gracefully
+    #Test if item ID does not exist and return error message
     item = content.getItem(itemId=featureServiceItemID)
-    if 'error' in item:
-        print(item)
-        exit
+    if item.id is None:
+        logMessage('Error: Unable to find feature service with ID: {}'.format(featureServiceItemID))
+        sys.exit(1)
 
     #GET details from the prepublished feature service
     global productionURL
@@ -474,9 +494,9 @@ def getPrePublishedInfo():
 
     #GET the prepublished feature collection name
     fcItem = content.getItem(itemId=featureCollectionItemID)
-    if 'error' in fcItem:
-        print(fcItem)
-        exit
+    if fcItem.id is None:
+        logMessage('Error: Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
+        sys.exit(1)
 
     global FCtitle
     FCtitle = fcItem.name
@@ -488,7 +508,6 @@ def readConfig():
     try:
         config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
     except:
-        logMessage("Error loading configuration file: " + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg'))
         showError(sys.exc_info()[2]) 
     global syncLOG
     syncLOG = validateInput(config, 'Log File Location', 'syncLog', 'path', True)
@@ -508,14 +527,14 @@ def readConfig():
     global pw
     pw = validateInput(config, 'Portal Credentials', 'pw', 'string', True)
 
-    global enableQuantization
-    enableQuantization = validateInput(config, 'Quantization', 'enableQuantization', 'bool', False)
-
     global maxAllowableOffset
-    maxAllowableOffset = validateInput(config, 'Quantization', 'maxAllowableOffset', 'int', False)
+    maxAllowableOffset = validateInput(config, 'Generalization', 'maxAllowableOffset', 'int', False)
 
-    global tolerance
-    tolerance = validateInput(config, 'Quantization', 'tolerance', 'int', False)
+    #global enableGeneralization
+    #enableGeneralization = validateInput(config, 'Generalization', 'enableGeneralization', 'bool', False)
+
+    #global tolerance
+    #tolerance = validateInput(config, 'Generalization', 'tolerance', 'int', False)
 
     global featureServiceItemID
     featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
@@ -528,6 +547,7 @@ def readConfig():
 
 def main():
     readConfig()
+    loggingStart()
 
     global sh
     sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
@@ -539,12 +559,10 @@ def main():
     else:
         for v in sh.message:
             print(v)
-        exit
+        sys.exit(1)
 
 if __name__ == "__main__":
     try:
         main()
-    except:
-        print("should check the temp IDs here and cleanup anything that's left over")
     finally:
         clearTempContent()
