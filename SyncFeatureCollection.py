@@ -117,7 +117,7 @@ def loggingEnd(endingProcess):
         log = open(logPath,"a")
         endtime = datetime.datetime.now()
          # Process Completed...
-        log.write("     " + str(endtime.strftime('%Y-%m-%d %H:%M:%S')) + " - " + endingProcess + " completed successfully!"
+        log.write("     " + str(endtime.strftime('%Y-%m-%d %H:%M:%S')) + " - " + endingProcess + " completed successfully"
            + "\n" + "Elapsed time " + str(endtime - starttime) + "\n")
         log.write("\n")
         log.close()
@@ -137,8 +137,8 @@ def watchDog(file_Name, attempts=0, timeout=5, sleep_int=5, total_Attempts=5):
                 logMessage(baseName + " File Geodatabase Zip file does not exist at " + os.path.dirname(os.path.repalpath(file_Name)))
 
 def showError(tb):
-    tbinfo = traceback.format_tb(tb)[0]
-    pymsg = "PYTHON ERRORS:\nTraceback info:\n" + tbinfo + "\nError Info:\n" + str(sys.exc_info()[1])
+    tbinfo = traceback.format_tb(tb)
+    pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
     logMessage("" + pymsg)
     print(pymsg)
 
@@ -191,8 +191,8 @@ def updateProductionFC():
             if status is True:
                 if (os.path.exists(jsonExport)):
                    os.unlink(jsonExport)
-                logMessage(FCtitle + " was successfully updated!")
-                loggingEnd("Production feature collection was successully updated!")
+                logMessage(FCtitle + " was successfully updated")
+                loggingEnd("Production feature collection was successully updated")
                 print("Sync complete, Feature Collection updated")
                 exit
             else:
@@ -244,7 +244,7 @@ def export_tempFeatureCollection():
         #    response = urllib.request.urlretrieve(url, jsonExport)
 
         #Temporary Feature Collection created and new data captured
-        logMessage(FCtemp + " created... preparing to update production" + FCtitle + " feature collection.")
+        logMessage(FCtemp + " feature collection created")
         updateProductionFC()
     except:
         showError(sys.exc_info()[2])
@@ -316,14 +316,14 @@ def publishTempFeatureService(gdbID, myContent, version):
         updateProductionFS(result.url)
         usercontent.deleteItems(items=tempFeatureServiceItemID)
 
-        logMessage(baseName + " feature service publishing complete... preparing to export to a feature collection.")
+        logMessage(baseName + " feature service publishing complete")
 
         export_tempFeatureCollection()
     except:
         showError(sys.exc_info()[2])
 
 def updateProductionFS(url):
-    logMessage("Preparing to update " + productionFSName)
+    logMessage("Updating " + productionFSName + " feature service")
     productionFS = arcrest.agol.services.FeatureService(url=productionURL,
         securityHandler=sh,
         proxy_port=None,
@@ -392,7 +392,7 @@ def updateProductionFS(url):
                                           returnGeometry=True,
                                           out_fields="*")
                 lyr.applyEdits(addFeatures=results.features)
-    logMessage(productionFSName + " updated sucessfully!")
+    logMessage(productionFSName + " updated sucessfully")
 
 def uploadFGDB():
     try:
@@ -419,7 +419,7 @@ def uploadFGDB():
         global gdbItemID
         gdbItemID = result.id
 
-        logMessage(baseName + " File Geodatabase upload completed... preparing to publish as a feature service.")
+        logMessage(baseName + " File Geodatabase upload completed")
 
         publishTempFeatureService(gdbItemID, None, None)
 
