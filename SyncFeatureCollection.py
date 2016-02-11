@@ -1,9 +1,7 @@
-﻿import datetime, json, os, sys, subprocess, time, traceback, uuid, urllib, zipfile, json
-from subprocess import Popen
+﻿import datetime, os, sys, time, traceback, urllib
+import arcrest, arcresthelper
 from arcrest import manageorg
-import arcrest
-from arcrest.agol import FeatureService
-from collections import OrderedDict 
+from arcresthelper import featureservicetools
 
 vi = sys.version_info[0]
 if vi == 2:
@@ -21,7 +19,7 @@ fcType = "feature collection"
 starttime = None
 tempFeatureCollectionItemID = None
 tempFeatureServiceItemID = None
-sh = None
+shh = None
 baseURL = None
 
 def validateInput(config, group, name, type, required):
@@ -42,7 +40,7 @@ def validateInput(config, group, name, type, required):
             return value
     except:
         if required:
-            showError(sys.exc_info()[2])  
+            logError(sys.exc_info()[2])  
         else:
             if type == 'bool':
                 return False
@@ -57,23 +55,7 @@ def setBaseName(gdbZip):
         global FCtemp 
         FCtemp = baseName + "_temp"
 
-def trace():
-    """
-        trace finds the line, the filename
-        and error message and returns it
-        to the user
-    """
-    import traceback
-    import sys
-    tb = sys.exc_info()[2]
-    tbinfo = traceback.format_tb(tb)[0]
-    # script name + line number
-    line = tbinfo.split(", ")[1]
-    # Get Python syntax error
-    synerror = traceback.format_exc().splitlines()[-1]
-    return line, __file__, synerror
-
-def loggingStart():
+def startLogging():
     # Logging Logic
         global starttime
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -111,7 +93,7 @@ def logMessage(myMessage):
         log.close()
         print("     " + str(d) + " - " +myMessage + "\n")
 
-def loggingEnd(endingProcess):
+def endLogging(endingProcess):
         # Close out the log file
         global starttime
         log = open(logPath,"a")
@@ -122,21 +104,7 @@ def loggingEnd(endingProcess):
         log.write("\n")
         log.close()
 
-def watchDog(file_Name, attempts=0, timeout=5, sleep_int=5, total_Attempts=5):
-    if attempts < timeout and os.path.exists(file_Name) and os.path.isfile(file_Name):
-        try:
-            results = os.path.exists(file_Name)
-            if results == True:
-                return results
-        except:
-            # perform an action
-            if (attempts + 1 <= total_Attempts):
-                sleep(sleep_int)
-                watchDog(file_Name, attempts + 1)
-            else:
-                logMessage(baseName + " File Geodatabase Zip file does not exist at " + os.path.dirname(os.path.repalpath(file_Name)))
-
-def showError(tb):
+def logError(tb):
     tbinfo = traceback.format_tb(tb)
     pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
     logMessage("" + pymsg)
@@ -152,7 +120,7 @@ def updateProductionFC():
         #Start Logging
         logMessage("Update " + FCtitle + " production feature collection")
         
-        admin = manageorg.Administration(url=baseURL, securityHandler=sh)
+        admin = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         content = admin.content
         item = content.getItem(featureCollectionItemID)
         usercontent = content.users.user(username)
@@ -192,7 +160,7 @@ def updateProductionFC():
                 if (os.path.exists(jsonExport)):
                    os.unlink(jsonExport)
                 logMessage(FCtitle + " was successfully updated")
-                loggingEnd("Production feature collection was successully updated")
+                endLogging("Production feature collection was successully updated")
                 print("Sync complete, Feature Collection updated")
                 exit
             else:
@@ -200,14 +168,14 @@ def updateProductionFC():
         else:
             exit
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
-def export_tempFeatureCollection():
+def exportTempFeatureCollection():
     try:
         #Start Logging
         logMessage("Exporting " + FCtemp + " temporary feature collection")
 
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         content = org.content
         usercontent = content.users.user(username)
         if isinstance(usercontent, manageorg.administration._content.User):
@@ -235,7 +203,7 @@ def export_tempFeatureCollection():
 
         #Export Temporary Feature Collection as in memory JSON response
         #jsonExport = exportItem.itemData(f="json")
-        token = sh.token
+        token = shh.securityhandler.token
         url = baseURL + "/content/items/" + tempFeatureCollectionItemID + "/data?token=" + token + "&f=json"
         
         if vi == 2:
@@ -247,13 +215,13 @@ def export_tempFeatureCollection():
         logMessage(FCtemp + " feature collection created")
         updateProductionFC()
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
 def deleteFGDB(myContent):
     try:
         logMessage("Removing  " + baseName + " File Geodatabase.")
 
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         gdb_itemId = myContent['File Geodatabase']
         item = org.content.getItem(gdb_itemId)
         usercontent = org.content.users.user(username)
@@ -264,35 +232,41 @@ def deleteFGDB(myContent):
         else:
             logMessage(baseName + " File Geodatabase removed.")
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
 def clearTempContent():
     #Remove any temp items that were not cleaned up due to failures in the script
-    if baseURL is not None or sh is not None:
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+    if baseURL is not None or shh is not None:
+        org = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         content = org.content
         usercontent = content.users.user(username)
         
         if gdbItemID is not None:
             gdbItem = content.getItem(itemId=gdbItemID)
             if gdbItem.id is not None:
+                logMessage("File geodatabase still exists, deleting item.")
                 usercontent.deleteItems(items=gdbItem.id)
+                logMessage("File geodatabase succesfully deleted.")
         
         if tempFeatureServiceItemID is not None:
             fsItem = content.getItem(itemId=tempFeatureServiceItemID)
             if fsItem.id is not None:
+                logMessage("Temp feature service still exists, deleting item.")
                 usercontent.deleteItems(items=fsItem.id)
+                logMessage("Temp feature service succesfully deleted.")
 
         if tempFeatureCollectionItemID is not None:
             fcItem = content.getItem(itemId=tempFeatureCollectionItemID)
             if fcItem.id is not None:
+                logMessage("Temp feature collection still exists, deleting item.")
                 usercontent.deleteItems(items=fcItem.id)
+                logMessage("Temp feature collection succesfully deleted.")
 
-def publishTempFeatureService(gdbID, myContent, version):
+def publishTempFeatureService(gdbID):
     try:
         logMessage("Publishing temp " + baseName + " feature service")
 
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
 
         publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
             layerInfo=None,
@@ -313,28 +287,29 @@ def publishTempFeatureService(gdbID, myContent, version):
         global tempFeatureServiceItemID
         tempFeatureServiceItemID = result.id
 
-        updateProductionFS(result.url)
+        updateProductionFS()
         usercontent.deleteItems(items=tempFeatureServiceItemID)
 
         logMessage(baseName + " feature service publishing complete")
 
-        export_tempFeatureCollection()
+        exportTempFeatureCollection()
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
-def updateProductionFS(url):
+def updateProductionFS():
     logMessage("Updating " + productionFSName + " feature service")
-    productionFS = arcrest.agol.services.FeatureService(url=productionURL,
-        securityHandler=sh,
-        proxy_port=None,
-        proxy_url=None,
-        initialize=True)
 
-    updateFS = arcrest.agol.services.FeatureService(url=url,
-        securityHandler=sh,
-        proxy_port=None,
-        proxy_url=None,
-        initialize=True)
+    securityinfo = {}
+    securityinfo['username'] = username
+    securityinfo['password'] = pw
+
+    shh = arcresthelper.securityhandlerhelper.securityhandlerhelper(securityinfo)
+
+    fst = featureservicetools.featureservicetools(shh)
+
+    productionFS = fst.GetFeatureService(featureServiceItemID, False)
+
+    updateFS = fst.GetFeatureService(tempFeatureServiceItemID, False)
 
     global updateLayers
     updateLayers = {}
@@ -351,16 +326,15 @@ def updateProductionFS(url):
                 updateLayers[production_id] = update_id
                 break
 
-    del(updateFS)
-
     for lyr in productionFS.layers:
-        lyrUrl = url + "/" + str(updateLayers[lyr.id])
+        lyrUrl = updateFS.url + "/" + str(updateLayers[lyr.id])
         updatedFL = arcrest.agol.services.FeatureLayer(url=lyrUrl,
-            securityHandler=sh,
+            securityHandler=shh.securityhandler,
             proxy_port=None,
             proxy_url=None,
             initialize=True)
-        lyr.deleteFeatures(where="1=1")
+        #lyr.deleteFeatures(where="1=1")
+        fst.DeleteFeaturesFromFeatureLayer(url=lyr.url, sql="1=1", chunksize=lyr.maxRecordCount)
 
         result = updatedFL.query(where='1=1', returnIDsOnly=True)
         if 'error' in result:
@@ -371,7 +345,7 @@ def updateProductionFS(url):
             oids = result['objectIds']
             total = len(oids)
             if len(oids) > chunksize:
-                print ("{0} features to be downloaded for {1} layer".format(total, lyr.name))
+                print ("{0} features to be updated for {1} layer".format(total, lyr.name))
                 totalQueried = 0
                 for chunk in chunklist(l=oids, n=chunksize):
                     oidsQuery = ",".join(map(str, chunk))
@@ -404,7 +378,7 @@ def uploadFGDB():
         itemParams.tags = tags
         itemParams.typeKeywords = "Data,File Geodatabase"
 
-        org = arcrest.manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = arcrest.manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         content = org.content
         usercontent = content.users.user(username)
         if isinstance(usercontent, arcrest.manageorg.administration._content.User):
@@ -421,17 +395,17 @@ def uploadFGDB():
 
         logMessage(baseName + " File Geodatabase upload completed")
 
-        publishTempFeatureService(gdbItemID, None, None)
+        publishTempFeatureService(gdbItemID)
 
         usercontent.deleteItems(items=gdbItemID)
 
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
-def sync_Init():
+def beginSync():
     try:
         logMessage("Syncronize " + baseName + " with updated data")
-        org = manageorg.Administration(url=baseURL, securityHandler=sh)
+        org = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
         result = org.search(baseName,bbox = None)
         keyset = ['results']
 
@@ -455,10 +429,10 @@ def sync_Init():
                         uploadFGDB()
 
     except:
-        showError(sys.exc_info()[2])
+        logError(sys.exc_info()[2])
 
 def getPrePublishedInfo():
-    admin = manageorg.Administration(url=baseURL, securityHandler=sh)
+    admin = manageorg.Administration(url=baseURL, securityHandler=shh.securityhandler)
     content = admin.content
 
     #Test if item ID does not exist and return error message
@@ -508,7 +482,7 @@ def readConfig():
     try:
         config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
     except:
-        showError(sys.exc_info()[2]) 
+        logError(sys.exc_info()[2]) 
     global syncLOG
     syncLOG = validateInput(config, 'Log File Location', 'syncLog', 'path', True)
 
@@ -547,17 +521,22 @@ def readConfig():
 
 def main():
     readConfig()
-    loggingStart()
+    startLogging()
 
-    global sh
-    sh = arcrest.AGOLTokenSecurityHandler(username=username, password=pw)
+    securityinfo = {}
+    securityinfo['username'] = username
+    securityinfo['password'] = pw
 
-    if sh.valid:
+    global shh
+    shh = arcresthelper.securityhandlerhelper.securityhandlerhelper(securityinfo)
+
+    if shh.securityhandler.valid:
         getPrePublishedInfo()
         setBaseName(fgdb1)
-        sync_Init()
+        beginSync()
+        
     else:
-        for v in sh.message:
+        for v in shh.securityhandler.message:
             print(v)
         sys.exit(1)
 
