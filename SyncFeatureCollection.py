@@ -22,7 +22,7 @@ def readConfig():
     config = ConfigParser()
 
     try:
-        config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection_single.cfg')))
+        config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection_nebraska.cfg')))
     except:
         logError(sys.exc_info()[2]) 
     global syncLOG
@@ -307,7 +307,11 @@ def updateProductionFC():
             updatedFeatures = exportItem.itemData(f="json")
 
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        item.userItem.updateItem(itemParameters=manageorg.ItemParameter(), text=updatedFeatures)
+
+        itemParams = manageorg.ItemParameter()
+        itemParams.snippet = snippet + " as of " + str(d)
+
+        item.userItem.updateItem(itemParameters=itemParams, text=updatedFeatures)
         logMessage("{} feature collection updated".format(item.name))
     except:
         logError(sys.exc_info()[2])
