@@ -1,13 +1,24 @@
-﻿import datetime, os, sys, time, traceback, urllib
-import arcrest, arcresthelper
+﻿import datetime, os, sys, time, traceback, gzip, json, arcrest, arcresthelper
 from arcrest import manageorg
 from arcresthelper import featureservicetools
+from io import BytesIO
 
-vi = sys.version_info[0]
-if vi == 2:
+try:
+    import http.client as client
+    import urllib.parse as parse
+    from urllib.request import urlopen as urlopen
+    from urllib.request import Request as request
+    from urllib.parse import urlencode as encode
+    from configparser import ConfigParser   
+# py2
+except ImportError:
+    import httplib as client
+    from urllib2 import urlparse as parse
+    from urllib2 import urlopen as urlopen
+    from urllib2 import Request as request
+    from urllib import urlencode as encode
     from ConfigParser import ConfigParser
-else: 
-    from configparser import ConfigParser
+    unicode = str
 
 #TODO need to gracefully handle when these are not specified or if they have incorrect return values
 
@@ -15,24 +26,30 @@ starttime = None
 tempFeatureCollectionItemID = None
 gdbItemID = None
 shh = None
-orgURL = None
+
+#class CustomPublishParameter():
+#    _value = None
+#    #----------------------------------------------------------------------
+#    def __init__(self,
+#                 value,
+#                 ):
+#        """Constructor"""
+#        self._value = value
+#    #----------------------------------------------------------------------
+#    @property
+#    def value(self):
+#        return self._value
 
 def readConfig():
     
     config = ConfigParser()
+    config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection_states.cfg')))
 
-    try:
-        config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection_nebraska.cfg')))
-    except:
-        logError(sys.exc_info()[2]) 
     global syncLOG
     syncLOG = validateInput(config, 'Log File Location', 'syncLog', 'path', True)
 
     global fgdb
     fgdb = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
-
-    global jsonExport
-    jsonExport = validateInput(config, 'JSON Export', 'jsonExport', 'path', True)
 
     global orgURL
     orgURL = validateInput(config, 'Portal Sharing URL', 'baseURL', 'url', True)
@@ -53,29 +70,19 @@ def readConfig():
     featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
 
 def validateInput(config, group, name, type, required):
-    #TODO extend this to include extra validation that we can find IDs and whatnot
-    try:
-        #TODO if this just errors when the value is not supplied 
-        value = config.get(group, name)
-        if type == 'path':
-            return os.path.normpath(value)
-        elif type == 'mapping':
-            if value.find(',') > -1:
-                return list(v.split(',') for v in value.split(';'))
-            else:
-                print('Unable to parse name mapping')
-        elif type == 'bool':
-            return value.lower() == 'true'
+    #TODO if this just errors when the value is not supplied 
+    value = config.get(group, name)
+    if type == 'path':
+        return os.path.normpath(value)
+    elif type == 'mapping':
+        if value.find(',') > -1:
+            return list(v.split(',') for v in value.split(';'))
         else:
-            return value
-    except:
-        if required:
-            logError(sys.exc_info()[2])  
-        else:
-            if type == 'bool':
-                return False
-            else:
-                return None
+            print('Unable to parse name mapping')
+    elif type == 'bool':
+        return value.lower() == 'true'
+    else:
+        return value
 
 def startLogging():
     # Logging Logic
@@ -130,11 +137,30 @@ def logError(tb):
     pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
     logMessage("" + pymsg)
     print(pymsg)
+    raise
 
-def chunklist(l, n):
-    n = max(1, n)
-    for i in range(0, len(l), n):
-        yield l[i:i+n]
+def deleteItem(itemID):
+    org = manageorg.Administration(securityHandler=shh.securityhandler)
+    usercontent = org.content.users.user(username)
+    usercontent.deleteItems(items=itemID)
+
+def getJSON(url):
+    request_parameters = {'f' : 'json','token' : shh.securityhandler.token }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',}
+
+    req = request(url, encode(request_parameters).encode('UTF-8'), headers)
+    req.add_header('Accept-encoding', 'gzip')
+    response = urlopen(req)
+
+    if response.info().get('Content-Encoding') == 'gzip':
+        buf = BytesIO(response.read())
+        with gzip.GzipFile(fileobj=buf) as gzip_file:
+            response_bytes = gzip_file.read()
+    else:
+        response_bytes = response.read()
+    response_text = response_bytes.decode('UTF-8')
+    #return json.loads(response_text)
+    return response_text
 
 def getPublishedItems():
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -147,177 +173,134 @@ def getPublishedItems():
         sys.exit(1)
 
     global baseName
-    baseName= item.name
+    baseName= item.title # item.name is returning None for feature service created from FGDB
 
     global SR
     SR = item.spatialReference
 
-    #GET the prepublished feature collection name
+    #Get the prepublished feature collection name
     fcItem = content.getItem(itemId=featureCollectionItemID)
     if fcItem.id is None:
         logMessage('Error: Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
         sys.exit(1)
 
 def uploadFGDB():
-    try:
-        org = manageorg.Administration(securityHandler=shh.securityhandler)
-        result = org.search(baseName,bbox = None)
-        keyset = ['results']
+    #ToDo need a better way to search for the item, below is searching the entire organization, which may return many results and not necessarly the GDB we are looking for.
+    
+    org = manageorg.Administration(securityHandler=shh.securityhandler)
+    #result = org.search(baseName,bbox = None)
+    #keyset = ['results']
 
-        value = None
-        for key in keyset:
-            if key in result:
-                value = result[key]
-                if not (value == []):
-                    existingTitles = [d['title'] for d in value]
-                    existingIDs =[d['id'] for d in value]
-                    existingTypes =[d['type'] for d in value]
-                    existingItems = dict(zip(existingTypes, existingIDs))
-                    if "File Geodatabase" in existingItems:
-                        deleteFGDB(existingItems)
+    #value = None
+    #for key in keyset:
+    #    if key in result:
+    #        value = result[key]
+    #        if not (value == []):
+    #            existingTitles = [d['title'] for d in value]
+    #            existingIDs =[d['id'] for d in value]
+    #            existingTypes =[d['type'] for d in value]
+    #            existingItems = dict(zip(existingTypes, existingIDs))
+    #            if "File Geodatabase" in existingItems:
+    #                logMessage("File geodatabase {} found on the portal, deleting the item".format(baseName))
+    #                deleteItem(existingItems['File Geodatabase'])
+    #                logMessage("File geodatabase deleted")
 
+    logMessage("Uploading file geodatabase")
 
-        logMessage("Uploading file geodatabase")
+    itemParams = arcrest.manageorg.ItemParameter()
+    itemParams.title = baseName #this name should be derived from the fGDB
+    itemParams.type = "File Geodatabase"
+    itemParams.tags = "GDB"
+    itemParams.typeKeywords = "Data,File Geodatabase"
 
-        itemParams = arcrest.manageorg.ItemParameter()
-        itemParams.title = baseName #this name should be derived from the fGDB
-        itemParams.type = "File Geodatabase"
-        itemParams.tags = "GDB"
-        itemParams.typeKeywords = "Data,File Geodatabase"
+    content = org.content
+    usercontent = content.users.user(username)
+    if isinstance(usercontent, arcrest.manageorg.administration._content.User):
+        pass
 
-        org = arcrest.manageorg.Administration(securityHandler=shh.securityhandler)
-        content = org.content
-        usercontent = content.users.user(username)
-        if isinstance(usercontent, arcrest.manageorg.administration._content.User):
-            pass
+    gdbSize = os.path.getsize(fgdb)
 
-        gdbSize = os.path.getsize(fgdb)
+    #TODO add check for file size...if larger than 100 MBs we should set multipart to true
+    #see ArcREST _content.addItem
+    result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb)
 
-        #TODO add check for file size...if larger than 100 MBs we should set multipart to true
-        #see ArcREST _content.addItem
-        result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb)
+    global gdbItemID
+    gdbItemID = result.id
 
-        global gdbItemID
-        gdbItemID = result.id
-
-        logMessage("File geodatabase upload complete")
-    except:
-        logError(sys.exc_info()[2])
-
-def deleteFGDB(myContent):
-    try:
-        logMessage("File geodatabase {} found on the portal, deleting the item".format(baseName))
-
-        org = manageorg.Administration(securityHandler=shh.securityhandler)
-        gdb_itemId = myContent['File Geodatabase']
-        item = org.content.getItem(gdb_itemId)
-        usercontent = org.content.users.user(username)
-        result = usercontent.deleteItems(items=gdb_itemId)
-        logMessage("File geodatabase deleted")
-    except:
-        logError(sys.exc_info()[2])
+    logMessage("File geodatabase upload complete")
 
 def updateFeatureService():
-    try:
-        logMessage("Updating {} feature service".format(baseName))
+    logMessage("Updating {} feature service".format(baseName))
 
-        org = manageorg.Administration(securityHandler=shh.securityhandler)
+    org = manageorg.Administration(securityHandler=shh.securityhandler)
+    content = org.content
+    usercontent = content.users.user(username)
 
-        publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
-            layerInfo=None,
-            description=None,
-            maxRecordCount=None,
-            copyrightText=None,
-            targetSR=None)
+    #fst = featureservicetools.featureservicetools(shh)
+    #fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
 
-        content = org.content
-        usercontent = content.users.user(username)
-        if isinstance(usercontent, manageorg.administration._content.User):
-            pass
-        result = usercontent.publishItem(fileType="fileGeodatabase", 
-                                         publishParameters=publishParams, 
-                                         itemId=gdbItemID, 
-                                         wait=True, overwrite=True)
+    #publishParams = getJSON(fs.url)
+    #publishParams['name'] = baseName
+    #publishParams['layers'] = []
 
-        logMessage("{} feature service updated".format(baseName))
-    except:
-        logError(sys.exc_info()[2])
+    #layerInfo = []
+    #for layer in fs.layers:
+    #    lyrJSON = getJSON(layer.url)
+    #    lyrJSON['name'] = layer.name + str(1)
+    #    publishParams['layers'].append(lyrJSON)
+    ##    layerInfo.append(getJSON(layer.url))
+
+    publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
+        layerInfo=None,
+        description=None,
+        maxRecordCount=None,
+        copyrightText=None,
+        targetSR=None)
+   
+    result = usercontent.publishItem(fileType="fileGeodatabase", 
+                                        publishParameters=publishParams, 
+                                        itemId=gdbItemID, 
+                                        wait=True, overwrite=True)
+
+    logMessage("{} feature service updated".format(baseName))
 
 def exportTempFeatureCollection():
-    try:
-        logMessage("Exporting " + baseName + " to a temporary feature collection")
-        FCtemp = baseName + "_temp"     
+    logMessage("Exporting " + baseName + " to a temporary feature collection")
+    FCtemp = baseName + "_temp"     
 
-        org = manageorg.Administration(securityHandler=shh.securityhandler)
-        content = org.content
-        usercontent = content.users.user(username)
-
-        fst = featureservicetools.featureservicetools(shh)
-        fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
-      
-        expLayers = []
-        for lyr in fs.layers:
-            layerDict = {'id' : lyr.id}
-            layerDict.update({"maxAllowableOffset":maxAllowableOffset})
-            expLayers.append(layerDict)
-        expParams = {'layers': expLayers}
+    org = manageorg.Administration(securityHandler=shh.securityhandler)
+    content = org.content
+    usercontent = content.users.user(username)
+    expParams = {"maxAllowableOffset":maxAllowableOffset}
  
-        result = usercontent.exportItem(title=FCtemp,
-                                    itemId=featureServiceItemID,
-                                    exportFormat="feature collection",
-                                    exportParameters=expParams,
-                                    wait=True)
+    result = usercontent.exportItem(title=FCtemp,
+                                itemId=featureServiceItemID,
+                                exportFormat="feature collection",
+                                exportParameters=expParams,
+                                wait=True)
 
-        global tempFeatureCollectionItemID
-        tempFeatureCollectionItemID = result.id
-        ##TODO see if I can get the itemData as JSON like below
-        exportItem = content.getItem(itemId=tempFeatureCollectionItemID)
+    global tempFeatureCollectionItemID
+    tempFeatureCollectionItemID = result.id        
+    logMessage("Temp feature collection created")                                                           
 
-        #Export Temporary Feature Collection as in memory JSON response
-        #jsonExport = exportItem.itemData(f="json")
-        token = shh.securityhandler.token
-        url = orgURL + "/content/items/" + tempFeatureCollectionItemID + "/data?token=" + token + "&f=json"
-        
-        if vi == 2:
-            response = urllib.urlretrieve(url, jsonExport)
-        #else:
-        #    response = urllib.request.urlretrieve(url, jsonExport)
+def updateFeatureCollection():
+    admin = manageorg.Administration(securityHandler=shh.securityhandler)
+    content = admin.content
+    item = content.getItem(featureCollectionItemID)
 
-        #Temporary Feature Collection created and new data captured
-        logMessage("Temp feature collection created")
-    except:
-        logError(sys.exc_info()[2])
+    logMessage("Updating {} feature collection".format(item.name))
 
-def updateProductionFC():
-    try:
-        admin = manageorg.Administration(securityHandler=shh.securityhandler)
-        content = admin.content
-        item = content.getItem(featureCollectionItemID)
-        usercontent = content.users.user(username)
+    updatedFeatures = getJSON(orgURL + "/sharing/rest/content/items/" + tempFeatureCollectionItemID + "/data")
+    
+    d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        logMessage("Updating {} feature collection".format(item.name))
-
-        #Get JSON file to be passed into the production Feature Collection.
-        #with open(jsonExport, 'r', encoding='utf-8', errors='ignore') as layerDef:
-        if vi == 2:
-            with open(jsonExport, 'r') as layerDef:
-                updatedFeatures = layerDef.readline()
-        else:
-            exportItem = content.getItem(itemId=tempFeatureCollectionItemID)
-            updatedFeatures = exportItem.itemData(f="json")
-
-        d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        itemParams = manageorg.ItemParameter()
-        itemParams.snippet = snippet + " as of " + str(d)
-
-        item.userItem.updateItem(itemParameters=itemParams, text=updatedFeatures)
-        logMessage("{} feature collection updated".format(item.name))
-    except:
-        logError(sys.exc_info()[2])
+    itemParams = manageorg.ItemParameter()
+    itemParams.snippet = str(d)
+    item.userItem.updateItem(itemParameters=itemParams, text=updatedFeatures)
+    logMessage("{} feature collection updated".format(item.name))
 
 def removeTempContent():
-    #Remove any temp items that were not cleaned up due to failures in the script
+    #Remove any temp items created during the process
     if shh is not None:
         org = manageorg.Administration(securityHandler=shh.securityhandler)
         content = org.content
@@ -326,13 +309,13 @@ def removeTempContent():
         if gdbItemID is not None:
             gdbItem = content.getItem(itemId=gdbItemID)
             if gdbItem.id is not None:
-                usercontent.deleteItems(items=gdbItem.id)
+                deleteItem(gdbItem.id)
                 logMessage("File geodatabase deleted")
 
         if tempFeatureCollectionItemID is not None:
             fcItem = content.getItem(itemId=tempFeatureCollectionItemID)
             if fcItem.id is not None:
-                usercontent.deleteItems(items=fcItem.id)
+                deleteItem(fcItem.id)
                 logMessage("Temp feature collection deleted")
 
 def main():
@@ -351,11 +334,13 @@ def main():
     uploadFGDB()
     updateFeatureService()
     exportTempFeatureCollection()
-    updateProductionFC()
+    updateFeatureCollection()
     
 if __name__ == "__main__":
     try:
         main()
+    except:
+        logError(sys.exc_info()[2]) 
     finally:
         removeTempContent()
         endLogging()  
