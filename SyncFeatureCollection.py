@@ -27,18 +27,18 @@ tempFeatureCollectionItemID = None
 gdbItemID = None
 shh = None
 
-#class CustomPublishParameter():
-#    _value = None
-#    #----------------------------------------------------------------------
-#    def __init__(self,
-#                 value,
-#                 ):
-#        """Constructor"""
-#        self._value = value
-#    #----------------------------------------------------------------------
-#    @property
-#    def value(self):
-#        return self._value
+class CustomPublishParameter():
+    _value = None
+    #----------------------------------------------------------------------
+    def __init__(self,
+                 value,
+                 ):
+        """Constructor"""
+        self._value = value
+    #----------------------------------------------------------------------
+    @property
+    def value(self):
+        return self._value
 
 def readConfig():
     
@@ -236,29 +236,25 @@ def updateFeatureService():
     content = org.content
     usercontent = content.users.user(username)
 
-    #fst = featureservicetools.featureservicetools(shh)
-    #fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
+    fst = featureservicetools.featureservicetools(shh)
+    fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
 
-    #publishParams = getJSON(fs.url)
-    #publishParams['name'] = baseName
-    #publishParams['layers'] = []
+    publishParams = json.loads(getJSON(fs.url))
+    publishParams['name'] = baseName
+    layers = json.loads(getJSON(fs.url + "/layers"))
+    publishParams['layers'] = layers['layers']
+    publishParams['tables'] = layers['tables']
 
-    #layerInfo = []
-    #for layer in fs.layers:
-    #    lyrJSON = getJSON(layer.url)
-    #    lyrJSON['name'] = layer.name + str(1)
-    #    publishParams['layers'].append(lyrJSON)
-    ##    layerInfo.append(getJSON(layer.url))
-
-    publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
-        layerInfo=None,
-        description=None,
-        maxRecordCount=None,
-        copyrightText=None,
-        targetSR=None)
+    #publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
+    #    layerInfo=None,
+    #    description=None,
+    #    maxRecordCount=None,
+    #    copyrightText=None,
+    #    targetSR=None)
    
     result = usercontent.publishItem(fileType="fileGeodatabase", 
-                                        publishParameters=publishParams, 
+                                        #publishParameters=publishParams,
+                                        publishParameters=CustomPublishParameter(publishParams),  
                                         itemId=gdbItemID, 
                                         wait=True, overwrite=True)
 
