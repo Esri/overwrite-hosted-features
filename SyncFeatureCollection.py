@@ -9,7 +9,7 @@ try:
     from urllib.request import urlopen as urlopen
     from urllib.request import Request as request
     from urllib.parse import urlencode as encode
-    from configparser import ConfigParser   
+    import configparser as configparser
 # py2
 except ImportError:
     import httplib as client
@@ -17,15 +17,15 @@ except ImportError:
     from urllib2 import urlopen as urlopen
     from urllib2 import Request as request
     from urllib import urlencode as encode
-    from ConfigParser import ConfigParser
+    import ConfigParser as configparser
     unicode = str
 
-#TODO need to gracefully handle when these are not specified or if they have incorrect return values
-
+logPath = None
 starttime = None
 tempFeatureCollectionItemID = None
 gdbItemID = None
 shh = None
+layerOrder = None
 
 class CustomPublishParameter():
     _value = None
@@ -40,13 +40,36 @@ class CustomPublishParameter():
     def value(self):
         return self._value
 
-def readConfig():
-    
-    config = ConfigParser()
-    config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection_states.cfg')))
+def validateInput(config, group, name, type, required):
+    #TODO if this just errors when the value is not supplied
+    try: 
+        value = config.get(group, name,)
+        if type == 'path':
+            return os.path.normpath(value)
+        elif type == 'list':
+            return value.split(',')
+        elif type == 'bool':
+            return value.lower() == 'true'
+        else:
+            return value
+    except configparser.NoSectionError, configparser.NoOptionError:
+        if required:
+            raise
+        else:
+            return None
 
-    global syncLOG
-    syncLOG = validateInput(config, 'Log File Location', 'syncLog', 'path', True)
+def readConfig():  
+    config = configparser.ConfigParser()
+    config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
+
+    global featureServiceItemID
+    featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
+
+    global featureCollectionItemID
+    featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
+
+    global logPath
+    logPath = validateInput(config, 'Log File Location', 'syncLog', 'path', False)
 
     global fgdb
     fgdb = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
@@ -63,45 +86,27 @@ def readConfig():
     global maxAllowableOffset
     maxAllowableOffset = validateInput(config, 'Generalization', 'maxAllowableOffset', 'int', False)
 
-    global featureServiceItemID
-    featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
-
-    global featureCollectionItemID
-    featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
-
-def validateInput(config, group, name, type, required):
-    #TODO if this just errors when the value is not supplied 
-    value = config.get(group, name)
-    if type == 'path':
-        return os.path.normpath(value)
-    elif type == 'mapping':
-        if value.find(',') > -1:
-            return list(v.split(',') for v in value.split(';'))
-        else:
-            print('Unable to parse name mapping')
-    elif type == 'bool':
-        return value.lower() == 'true'
-    else:
-        return value
+    global layerOrder
+    layerOrder = validateInput(config, 'Layers', 'order', 'list', False)
 
 def startLogging():
     # Logging Logic
+    global logPath
+    if logPath is not None:  
         global starttime
         d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        #TODO this should be handled as a part of validation logic...if it doens't exist create it
-        fileNameSpecified = os.path.basename(syncLOG).find(".txt") > -1
+        isFile = os.path.isfile(logPath)
 
-        logfileLocation = os.path.abspath(os.path.dirname(syncLOG))
+        logfileLocation = os.path.abspath(os.path.dirname(logPath))
         if not os.path.exists(logfileLocation):
             os.makedirs(logfileLocation)
 
-        #os.path.abspath(os.path.dirname(__file__)), "SyncLog"
-        if fileNameSpecified:
-            path = syncLOG
+        if isFile:
+            path = logPath
         else:
-            path = os.path.join(syncLog, "SyncLog.txt")
-        global logPath
+            path = os.path.join(logfileLocation, "SyncLog.txt")
+       
         logPath = path
         log = open(path,"a")
     
@@ -115,29 +120,28 @@ def startLogging():
         log.close()
 
 def logMessage(myMessage):
-        # Close out the log file
-        d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if logPath is not None:
         log = open(logPath,"a")
         log.write("     " + str(d) + " - " +myMessage + "\n")
         log.close()
-        print("     " + str(d) + " - " +myMessage + "\n")
+    print("     " + str(d) + " - " +myMessage + "\n")
 
 def endLogging():
     # Close out the log file
-    global starttime
-    log = open(logPath,"a")
-    endtime = datetime.datetime.now()
+    if logPath is not None:
+        global starttime
+        log = open(logPath,"a")
+        endtime = datetime.datetime.now()
         # Process Completed...
-    log.write("\n" + "Elapsed time " + str(endtime - starttime) + "\n")
-    log.write("\n")
-    log.close()
+        log.write("\n" + "Elapsed time " + str(endtime - starttime) + "\n")
+        log.write("\n")
+        log.close()
 
 def logError(tb):
     tbinfo = traceback.format_tb(tb)
     pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
     logMessage("" + pymsg)
-    print(pymsg)
-    raise
 
 def deleteItem(itemID):
     org = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -158,9 +162,7 @@ def getJSON(url):
             response_bytes = gzip_file.read()
     else:
         response_bytes = response.read()
-    response_text = response_bytes.decode('UTF-8')
-    #return json.loads(response_text)
-    return response_text
+    return response_bytes.decode('UTF-8')
 
 def getPublishedItems():
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -169,41 +171,30 @@ def getPublishedItems():
     #Test if item ID does not exist and return error message
     item = content.getItem(itemId=featureServiceItemID)
     if item.id is None:
-        logMessage('Error: Unable to find feature service with ID: {}'.format(featureServiceItemID))
-        sys.exit(1)
+        raise Exception('Unable to find feature service with ID: {}'.format(featureServiceItemID))
 
     global baseName
     baseName= item.title # item.name is returning None for feature service created from FGDB
 
-    global SR
-    SR = item.spatialReference
-
     #Get the prepublished feature collection name
     fcItem = content.getItem(itemId=featureCollectionItemID)
     if fcItem.id is None:
-        logMessage('Error: Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
-        sys.exit(1)
+        raise Exception('Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
 
 def uploadFGDB():
-    #ToDo need a better way to search for the item, below is searching the entire organization, which may return many results and not necessarly the GDB we are looking for.
-    
+    #Search for any file geodatabse items that have a title matching the title of the Feature Service
     org = manageorg.Administration(securityHandler=shh.securityhandler)
-    #result = org.search(baseName,bbox = None)
-    #keyset = ['results']
+    #search = org.search(q='owner:{} type:"File Geodatabase"'.format(username))
 
-    #value = None
-    #for key in keyset:
-    #    if key in result:
-    #        value = result[key]
-    #        if not (value == []):
-    #            existingTitles = [d['title'] for d in value]
-    #            existingIDs =[d['id'] for d in value]
-    #            existingTypes =[d['type'] for d in value]
-    #            existingItems = dict(zip(existingTypes, existingIDs))
-    #            if "File Geodatabase" in existingItems:
-    #                logMessage("File geodatabase {} found on the portal, deleting the item".format(baseName))
-    #                deleteItem(existingItems['File Geodatabase'])
-    #                logMessage("File geodatabase deleted")
+    #results = search['results']
+    #existingGDB = next((r['id'] for r in results if r['title'] == baseName), None)
+    #if existingGDB is not None:
+    #    logMessage("File geodatabase {} found on the portal, deleting the item".format(baseName))
+    #    deleteItem(existingGDB)
+    #    logMessage("File geodatabase deleted")
+
+    if not os.path.exists(fgdb):
+        raise Exception("File GDB: {} could not be found".format(fgdb))
 
     logMessage("Uploading file geodatabase")
 
@@ -244,16 +235,8 @@ def updateFeatureService():
     layers = json.loads(getJSON(fs.url + "/layers"))
     publishParams['layers'] = layers['layers']
     publishParams['tables'] = layers['tables']
-
-    #publishParams = arcrest.manageorg.PublishFGDBParameter(name=baseName,
-    #    layerInfo=None,
-    #    description=None,
-    #    maxRecordCount=None,
-    #    copyrightText=None,
-    #    targetSR=None)
    
     result = usercontent.publishItem(fileType="fileGeodatabase", 
-                                        #publishParameters=publishParams,
                                         publishParameters=CustomPublishParameter(publishParams),  
                                         itemId=gdbItemID, 
                                         wait=True, overwrite=True)
@@ -269,15 +252,20 @@ def exportTempFeatureCollection():
     usercontent = content.users.user(username)
     expParams = {"maxAllowableOffset":maxAllowableOffset}
  
-    result = usercontent.exportItem(title=FCtemp,
-                                itemId=featureServiceItemID,
-                                exportFormat="feature collection",
-                                exportParameters=expParams,
-                                wait=True)
-
     global tempFeatureCollectionItemID
-    tempFeatureCollectionItemID = result.id        
-    logMessage("Temp feature collection created")                                                           
+    try:
+        result = usercontent.exportItem(title=FCtemp,
+                                    itemId=featureServiceItemID,
+                                    exportFormat="feature collection",
+                                    exportParameters=expParams,
+                                    wait=True)
+        tempFeatureCollectionItemID = result.id        
+        logMessage("Temp feature collection created")
+    except:
+        search = org.search(q='owner:{} type:"Feature Collection"'.format(username))
+        results = search['results']
+        tempFeatureCollectionItemID = next((r['id'] for r in results if r['title'] == FCtemp), None)
+        raise                       
 
 def updateFeatureCollection():
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -286,13 +274,23 @@ def updateFeatureCollection():
 
     logMessage("Updating {} feature collection".format(item.name))
 
-    updatedFeatures = getJSON(orgURL + "/sharing/rest/content/items/" + tempFeatureCollectionItemID + "/data")
+    updatedFeatures = json.loads(getJSON(orgURL + "/sharing/rest/content/items/" + tempFeatureCollectionItemID + "/data"))
     
+    if layerOrder is not None:
+        orderedLayers = []
+        layers = updatedFeatures['layers']
+        for name in layerOrder:
+            lyr = next((i for i in layers if i['layerDefinition']['name'] == name), None)
+            if lyr is None:
+                raise Exception("Layer name: {} not found in feature service, unable to update feature collection".format(name))
+            orderedLayers.insert(0, lyr)
+        updatedFeatures['layers'] = orderedLayers
+
     d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     itemParams = manageorg.ItemParameter()
     itemParams.snippet = str(d)
-    item.userItem.updateItem(itemParameters=itemParams, text=updatedFeatures)
+    item.userItem.updateItem(itemParameters=itemParams, text=json.dumps(updatedFeatures))
     logMessage("{} feature collection updated".format(item.name))
 
 def removeTempContent():
