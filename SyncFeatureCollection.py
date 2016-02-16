@@ -1,6 +1,5 @@
-﻿import datetime, os, sys, time, traceback, gzip, json, arcrest, arcresthelper
+﻿import datetime, os, sys, traceback, gzip, json, arcresthelper
 from arcrest import manageorg
-from arcresthelper import featureservicetools
 from io import BytesIO
 
 try:
@@ -43,7 +42,10 @@ class CustomPublishParameter():
 def validateInput(config, group, name, type, required):
     #TODO if this just errors when the value is not supplied
     try: 
-        value = config.get(group, name,)
+        value = config.get(group, name)
+        if value == '':
+            raise configparser.NoOptionError(name, group)
+
         if type == 'path':
             return os.path.normpath(value)
         elif type == 'list':
@@ -52,7 +54,7 @@ def validateInput(config, group, name, type, required):
             return value.lower() == 'true'
         else:
             return value
-    except configparser.NoSectionError, configparser.NoOptionError:
+    except (configparser.NoSectionError, configparser.NoOptionError):
         if required:
             raise
         else:
@@ -198,7 +200,7 @@ def uploadFGDB():
 
     logMessage("Uploading file geodatabase")
 
-    itemParams = arcrest.manageorg.ItemParameter()
+    itemParams = manageorg.ItemParameter()
     itemParams.title = baseName #this name should be derived from the fGDB
     itemParams.type = "File Geodatabase"
     itemParams.tags = "GDB"
@@ -206,14 +208,11 @@ def uploadFGDB():
 
     content = org.content
     usercontent = content.users.user(username)
-    if isinstance(usercontent, arcrest.manageorg.administration._content.User):
-        pass
 
-    gdbSize = os.path.getsize(fgdb)
+    gdbSize = float(os.path.getsize(fgdb)) / (1024 * 1024)
 
-    #TODO add check for file size...if larger than 100 MBs we should set multipart to true
-    #see ArcREST _content.addItem
-    result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb)
+    #If larger than 100 MBs we should set multipart to true
+    result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
 
     global gdbItemID
     gdbItemID = result.id
@@ -227,7 +226,7 @@ def updateFeatureService():
     content = org.content
     usercontent = content.users.user(username)
 
-    fst = featureservicetools.featureservicetools(shh)
+    fst = arcresthelper.featureservicetools.featureservicetools(shh)
     fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
 
     publishParams = json.loads(getJSON(fs.url))
