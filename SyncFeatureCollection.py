@@ -1,4 +1,4 @@
-﻿import datetime, os, sys, traceback, gzip, json, arcresthelper
+﻿import datetime, time, os, sys, traceback, gzip, json, arcresthelper
 from arcrest import manageorg
 from io import BytesIO
 
@@ -183,6 +183,9 @@ def getPublishedItems():
     if fcItem.id is None:
         raise Exception('Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
 
+    global tempFCName
+    tempFCName = fcItem.title + "_temp"
+
 def uploadFGDB():
     #Search for any file geodatabse items that have a title matching the title of the Feature Service
     org = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -243,28 +246,35 @@ def updateFeatureService():
     logMessage("{} feature service updated".format(baseName))
 
 def exportTempFeatureCollection():
-    logMessage("Exporting " + baseName + " to a temporary feature collection")
-    FCtemp = baseName + "_temp"     
+    logMessage("Exporting " + baseName + " to a temporary feature collection")    
 
     org = manageorg.Administration(securityHandler=shh.securityhandler)
     content = org.content
     usercontent = content.users.user(username)
-    expParams = {"maxAllowableOffset":maxAllowableOffset}
+    expParams = {}
+    if maxAllowableOffset is not None:
+       expParams.update({"maxAllowableOffset":maxAllowableOffset})
  
     global tempFeatureCollectionItemID
-    try:
-        result = usercontent.exportItem(title=FCtemp,
-                                    itemId=featureServiceItemID,
-                                    exportFormat="feature collection",
-                                    exportParameters=expParams,
-                                    wait=True)
-        tempFeatureCollectionItemID = result.id        
-        logMessage("Temp feature collection created")
-    except:
-        search = org.search(q='owner:{} type:"Feature Collection"'.format(username))
-        results = search['results']
-        tempFeatureCollectionItemID = next((r['id'] for r in results if r['title'] == FCtemp), None)
-        raise                       
+    result = usercontent.exportItem(title=tempFCName,
+                                itemId=featureServiceItemID,
+                                exportFormat="feature collection",
+                                exportParameters=expParams,
+                                wait=False)
+    jobID = result[0]
+    userItem = result[1]
+    tempFeatureCollectionItemID = userItem.id
+
+    status = "processing"
+    while status != "completed":
+        status = userItem.status(jobId=jobID, jobType="export")
+        if status['status'].lower() == 'failed':
+            raise Exception("Could not export item: {}".format(tempFeatureCollectionItemID))
+        elif status['status'].lower() == 'completed':
+            break
+        time.sleep(2)  
+              
+    logMessage("Temp feature collection created")                    
 
 def updateFeatureCollection():
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
