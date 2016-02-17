@@ -24,7 +24,7 @@ starttime = None
 tempFeatureCollectionItemID = None
 gdbItemID = None
 shh = None
-layerOrder = None
+layerMapping = None
 
 class CustomPublishParameter():
     _value = None
@@ -48,8 +48,8 @@ def validateInput(config, group, name, type, required):
 
         if type == 'path':
             return os.path.normpath(value)
-        elif type == 'list':
-            return value.split(',')
+        elif type == 'mapping':
+            return list(v.split(',') for v in value.split(';'))
         elif type == 'bool':
             return value.lower() == 'true'
         else:
@@ -71,7 +71,7 @@ def readConfig():
     featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
 
     global logPath
-    logPath = validateInput(config, 'Log File Location', 'syncLog', 'path', False)
+    logPath = validateInput(config, 'Log File', 'path', 'path', False)
 
     global fgdb
     fgdb = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
@@ -88,8 +88,8 @@ def readConfig():
     global maxAllowableOffset
     maxAllowableOffset = validateInput(config, 'Generalization', 'maxAllowableOffset', 'int', False)
 
-    global layerOrder
-    layerOrder = validateInput(config, 'Layers', 'order', 'list', False)
+    global layerMapping
+    layerMapping = validateInput(config, 'Layers', 'nameMapping', 'mapping', False)
 
 def startLogging():
     # Logging Logic
@@ -238,6 +238,12 @@ def updateFeatureService():
     publishParams['layers'] = layers['layers']
     publishParams['tables'] = layers['tables']
    
+    if layerMapping is not None:
+        for map in layerMapping:
+            lyr = next((i for i in publishParams['layers'] if i['name'] == map[0]), None)
+            if lyr is not None:
+                lyr['name'] = map[1]
+
     result = usercontent.publishItem(fileType="fileGeodatabase", 
                                         publishParameters=CustomPublishParameter(publishParams),  
                                         itemId=gdbItemID, 
@@ -284,16 +290,6 @@ def updateFeatureCollection():
     logMessage("Updating {} feature collection".format(item.name))
 
     updatedFeatures = json.loads(getJSON(orgURL + "/sharing/rest/content/items/" + tempFeatureCollectionItemID + "/data"))
-    
-    if layerOrder is not None:
-        orderedLayers = []
-        layers = updatedFeatures['layers']
-        for name in layerOrder:
-            lyr = next((i for i in layers if i['layerDefinition']['name'] == name), None)
-            if lyr is None:
-                raise Exception("Layer name: {} not found in feature service, unable to update feature collection".format(name))
-            orderedLayers.insert(0, lyr)
-        updatedFeatures['layers'] = orderedLayers
 
     d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
