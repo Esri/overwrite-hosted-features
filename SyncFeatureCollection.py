@@ -57,6 +57,8 @@ def validateInput(config, group, name, type, required):
     except (configparser.NoSectionError, configparser.NoOptionError):
         if required:
             raise
+        elif type == 'bool':
+            return False
         else:
             return None
 
@@ -64,20 +66,28 @@ def readConfig():
     config = configparser.ConfigParser()
     config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
 
+    global logPath
+    logPath = validateInput(config, 'Log File', 'path', 'path', False)
+
+    global isVerbose
+    isVerbose = validateInput(config, 'Log File', 'isVerbose', 'bool', False)
+    
+    startLogging()
+
     global featureServiceItemID
     featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
 
     global featureCollectionItemID
     featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
 
-    global logPath
-    logPath = validateInput(config, 'Log File', 'path', 'path', False)
-
     global fgdb
     fgdb = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
 
     global orgURL
     orgURL = validateInput(config, 'Portal Sharing URL', 'baseURL', 'url', True)
+
+    global tokenURL
+    tokenURL = validateInput(config, 'Portal Sharing URL', 'tokenURL', 'url', False)
 
     global username
     username = validateInput(config, 'Portal Credentials', 'username', 'string', True)
@@ -92,12 +102,12 @@ def readConfig():
     layerMapping = validateInput(config, 'Layers', 'nameMapping', 'mapping', False)
 
 def startLogging():
-    # Logging Logic
+    # Logging Logic   
+    global starttime
+    starttime = datetime.datetime.now()
+    
     global logPath
     if logPath is not None:  
-        global starttime
-        d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
         isFile = os.path.isfile(logPath)
 
         logfileLocation = os.path.abspath(os.path.dirname(logPath))
@@ -111,19 +121,14 @@ def startLogging():
        
         logPath = path
         log = open(path,"a")
-    
+        d = starttime.strftime('%Y-%m-%d %H:%M:%S')
         log.write("----------------------------" + "\n")
-        log.write("----------------------------" + "\n")
-        log.write("Log: " + str(d) + "\n")
-        log.write("\n")
-        # Start process...
-        starttime = datetime.datetime.now()
-        log.write("Begin Data Sync:\n")
+        log.write("Begin Data Sync: " + str(d) + "\n")
         log.close()
 
-def logMessage(myMessage):
+def logMessage(myMessage, isError=False):
     d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    if logPath is not None:
+    if logPath is not None and (isVerbose or isError):
         log = open(logPath,"a")
         log.write("     " + str(d) + " - " +myMessage + "\n")
         log.close()
@@ -136,14 +141,13 @@ def endLogging():
         log = open(logPath,"a")
         endtime = datetime.datetime.now()
         # Process Completed...
-        log.write("\n" + "Elapsed time " + str(endtime - starttime) + "\n")
-        log.write("\n")
+        log.write("Elapsed Time: " + str(endtime - starttime) + "\n")
         log.close()
 
 def logError(tb):
     tbinfo = traceback.format_tb(tb)
     pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
-    logMessage("" + pymsg)
+    logMessage(pymsg, True)
 
 def deleteItem(itemID):
     org = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -319,15 +323,18 @@ def removeTempContent():
 
 def main():
     readConfig()
-    startLogging()
     
     securityinfo = {}
     securityinfo['username'] = username
     securityinfo['password'] = pw
     securityinfo['org_url'] = orgURL
+    securityinfo['token_url'] = tokenURL
 
     global shh
     shh = arcresthelper.securityhandlerhelper.securityhandlerhelper(securityinfo)
+
+    if not shh.securityhandler.valid:
+        raise Exception("Unable to connect to specified portal. Please verify you are passing in your correct portal url, username and password.")
 
     getPublishedItems()  
     uploadFGDB()
