@@ -180,7 +180,7 @@ def getPublishedItems():
         raise Exception('Unable to find feature service with ID: {}'.format(featureServiceItemID))
 
     global baseName
-    baseName= item.title # item.name is returning None for feature service created from FGDB
+    baseName = item.title 
 
     #Get the prepublished feature collection name
     fcItem = content.getItem(itemId=featureCollectionItemID)
@@ -233,12 +233,13 @@ def updateFeatureService():
     content = org.content
     usercontent = content.users.user(username)
 
-    fst = arcresthelper.featureservicetools.featureservicetools(shh)
-    fs = fst.GetFeatureService(itemId=featureServiceItemID,returnURLOnly=False)
+    item = content.getItem(itemId=featureServiceItemID)
+    url = item.url
 
-    publishParams = json.loads(getJSON(fs.url))
-    publishParams['name'] = baseName
-    layers = json.loads(getJSON(fs.url + "/layers"))
+    publishParams = json.loads(getJSON(url))
+    publishParams['name'] = os.path.basename(os.path.dirname(url))
+    layersJSON = getJSON(url + "/layers")    
+    layers = json.loads(layersJSON)
     publishParams['layers'] = layers['layers']
     publishParams['tables'] = layers['tables']
    
