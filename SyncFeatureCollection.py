@@ -1,5 +1,6 @@
 ﻿import datetime, time, os, sys, traceback, gzip, json, arcresthelper
 from arcrest import manageorg
+from arcrest.agol import FeatureLayer
 from io import BytesIO
 
 try:
@@ -64,7 +65,7 @@ def validateInput(config, group, name, type, required):
 
 def readConfig():  
     config = configparser.ConfigParser()
-    config.readfp(open(os.path.join(os.path.abspath(os.path.dirname(__file__)), 'SyncFeatureCollection.cfg')))
+    config.readfp(open(os.path.join(sys.path[0], 'SyncFeatureCollection.cfg')))
 
     global logPath
     logPath = validateInput(config, 'Log File', 'path', 'path', False)
@@ -240,10 +241,20 @@ def updateFeatureService():
     publishParams['name'] = os.path.basename(os.path.dirname(url))
     layersJSON = getJSON(url + "/layers")    
     layers = json.loads(layersJSON)
+
+    complexRenderers = {} # Overwriting a feature service from a FGDB does not support complext renderers
+    for layer in layers['layers']:
+        if 'drawingInfo' in layer:
+            if 'renderer' in layer['drawingInfo']:
+                if 'type' in layer['drawingInfo']['renderer']:
+                    if layer['drawingInfo']['renderer']['type'] != 'simple':
+                        complexRenderers[layer['id']] = layer['drawingInfo']
+                        layer['drawingInfo'] = ""             
+
     publishParams['layers'] = layers['layers']
     publishParams['tables'] = layers['tables']
    
-    if layerMapping is not None:
+    if layerMapping is not None: # Name of the layer must match the name of the feature class in the GDB
         for map in layerMapping:
             lyr = next((i for i in publishParams['layers'] if i['name'] == map[0]), None)
             if lyr is not None:
@@ -253,6 +264,14 @@ def updateFeatureService():
                                         publishParameters=CustomPublishParameter(publishParams),  
                                         itemId=gdbItemID, 
                                         wait=True, overwrite=True)
+
+    for id in complexRenderers: # Set the renderer definition back on the layer after overwrite completes
+        fl = FeatureLayer(url=url + "/" + str(id),
+        securityHandler=shh.securityhandler,
+        initialize=True)
+
+        adminFl = fl.administration
+        adminFl.updateDefinition({'drawingInfo':complexRenderers[id]})
 
     logMessage("{} feature service updated".format(baseName))
 
