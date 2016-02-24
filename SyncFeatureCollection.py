@@ -41,7 +41,15 @@ class CustomPublishParameter():
         return self._value
 
 def validateInput(config, group, name, type, required):
-    #TODO if this just errors when the value is not supplied
+    """Validates and returns the correspoinding value defined in the config.
+
+    Keyword arguments:
+    config - the instance of the configparser
+    group - the name of the group containing the property
+    name - the name of the property to get that value for
+    type - the type of property, 'path', 'mapping' 'bool', otherwise return the raw string
+    required - if the option is required and none is found than raise an exception
+    """
     try: 
         value = config.get(group, name)
         if value == '':
@@ -63,7 +71,8 @@ def validateInput(config, group, name, type, required):
         else:
             return None
 
-def readConfig():  
+def readConfig():
+    """Read the config and set global variables used in the script."""  
     config = configparser.ConfigParser()
     config.readfp(open(os.path.join(sys.path[0], 'SyncFeatureCollection.cfg')))
 
@@ -103,7 +112,7 @@ def readConfig():
     layerMapping = validateInput(config, 'Layers', 'nameMapping', 'mapping', False)
 
 def startLogging():
-    # Logging Logic   
+    """If a log file is specified in the config, create it if it doesn't exist and write the start time of the run.""" 
     global starttime
     starttime = datetime.datetime.now()
     
@@ -128,6 +137,12 @@ def startLogging():
         log.close()
 
 def logMessage(myMessage, isError=False):
+    """Log a new message and print to the python output.
+    
+    Keyword arguments:
+    myMessage - the message to log
+    isError - indicates if the message is an error, used to log even when verbose logging is disabled
+    """
     d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     if logPath is not None and (isVerbose or isError):
         log = open(logPath,"a")
@@ -136,7 +151,7 @@ def logMessage(myMessage, isError=False):
     print("     " + str(d) + " - " +myMessage + "\n")
 
 def endLogging():
-    # Close out the log file
+    """If a log file is specified in the config write the elapsed time."""
     if logPath is not None:
         global starttime
         log = open(logPath,"a")
@@ -146,16 +161,29 @@ def endLogging():
         log.close()
 
 def logError(tb):
+    """Log an error message.
+    
+    Keyword arguments:
+    tb - the traceback from the exception"""
+    tbinfo = traceback.format_tb(tb)
     tbinfo = traceback.format_tb(tb)
     pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
     logMessage(pymsg, True)
 
 def deleteItem(itemID):
+    """Delete an item from the organization.
+    
+    Keyword arguments:
+    itemID - the id of the item to delete"""
     org = manageorg.Administration(securityHandler=shh.securityhandler)
     usercontent = org.content.users.user(username)
     usercontent.deleteItems(items=itemID)
 
 def getJSON(url):
+    """Get the json defintion of a feature service or feature collection.
+    
+    Keyword arguments:
+    url - the url of the item."""
     request_parameters = {'f' : 'json','token' : shh.securityhandler.token }
     headers = {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',}
 
@@ -172,6 +200,7 @@ def getJSON(url):
     return response_bytes.decode('UTF-8')
 
 def getPublishedItems():
+    """Validates the feature service and feature collection exist and sets global variables."""
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
     content = admin.content
 
@@ -192,6 +221,7 @@ def getPublishedItems():
     tempFCName = fcItem.title + "_temp"
 
 def uploadFGDB():
+    """Uploads the file geodatabase to the portal."""
     org = manageorg.Administration(securityHandler=shh.securityhandler)
 
     if not os.path.exists(fgdb):
@@ -232,6 +262,7 @@ def uploadFGDB():
     logMessage("File geodatabase upload complete")
 
 def updateFeatureService():
+    """Overwrites the feature service using the uploaded file geodatabase."""
     logMessage("Updating {} feature service".format(baseName))
 
     org = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -269,17 +300,31 @@ def updateFeatureService():
                                         itemId=gdbItemID, 
                                         wait=True, overwrite=True)
 
+    logMessage("{} feature service updated".format(baseName))
+
     for id in complexRenderers: # Set the renderer definition back on the layer after overwrite completes
         fl = FeatureLayer(url=url + "/" + str(id),
         securityHandler=shh.securityhandler,
         initialize=True)
 
+        logMessage("Updating {} drawing info".format(fl.name))
         adminFl = fl.administration
-        adminFl.updateDefinition({'drawingInfo':complexRenderers[id]})
+        succeed = False
+        for i in range(3):
+            try:
+                adminFl.updateDefinition({'drawingInfo':complexRenderers[id]})
+                succeed = True
+                break
+            except:
+                continue
 
-    logMessage("{} feature service updated".format(baseName))
+        if succeed:
+            logMessage("{} drawing info updated".format(fl.name))
+        else:
+            logMessage("{} drawing info failed to update".format(fl.name))
 
 def exportTempFeatureCollection():
+    """Exports the feature service to a temporary feature collection."""
     logMessage("Exporting " + baseName + " to a temporary feature collection")    
 
     org = manageorg.Administration(securityHandler=shh.securityhandler)
@@ -311,6 +356,7 @@ def exportTempFeatureCollection():
     logMessage("Temp feature collection created")                    
 
 def updateFeatureCollection():
+    """Updates the productiong feature collection using the features in the temporary feature collection."""
     admin = manageorg.Administration(securityHandler=shh.securityhandler)
     content = admin.content
     item = content.getItem(featureCollectionItemID)
@@ -327,7 +373,7 @@ def updateFeatureCollection():
     logMessage("{} feature collection updated".format(item.name))
 
 def removeTempContent():
-    #Remove any temp items created during the process
+    """Remove the temporary file geodatabase and feature collection from the portal."""
     if shh is not None:
         org = manageorg.Administration(securityHandler=shh.securityhandler)
         content = org.content
