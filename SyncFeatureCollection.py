@@ -192,16 +192,7 @@ def getPublishedItems():
     tempFCName = fcItem.title + "_temp"
 
 def uploadFGDB():
-    #Search for any file geodatabse items that have a title matching the title of the Feature Service
     org = manageorg.Administration(securityHandler=shh.securityhandler)
-    #search = org.search(q='owner:{} type:"File Geodatabase"'.format(username))
-
-    #results = search['results']
-    #existingGDB = next((r['id'] for r in results if r['title'] == baseName), None)
-    #if existingGDB is not None:
-    #    logMessage("File geodatabase {} found on the portal, deleting the item".format(baseName))
-    #    deleteItem(existingGDB)
-    #    logMessage("File geodatabase deleted")
 
     if not os.path.exists(fgdb):
         raise Exception("File GDB: {} could not be found".format(fgdb))
@@ -211,17 +202,30 @@ def uploadFGDB():
     itemParams = manageorg.ItemParameter()
     itemParams.title = baseName #this name should be derived from the fGDB
     itemParams.type = "File Geodatabase"
-    itemParams.tags = "GDB"
+    itemParams.tags = "SyncFeatureCollection"
     itemParams.typeKeywords = "Data,File Geodatabase"
 
     content = org.content
     usercontent = content.users.user(username)
 
     gdbSize = float(os.path.getsize(fgdb)) / (1024 * 1024)
+    gdbName = os.path.basename(fgdb)
 
     #If larger than 100 MBs we should set multipart to true
-    result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
+    try:
+        result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
+    except:
+        search = org.search(q='SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(username))
 
+        results = search['results']
+        existingGDB = next((r['id'] for r in results if (r['name'] == gdbName and "SyncFeatureCollection" in r['tags'])), None)
+        if existingGDB is not None:
+            logMessage("File geodatabase {} found on the portal, deleting the item".format(gdbName))
+            deleteItem(existingGDB)
+            logMessage("File geodatabase deleted")
+
+        result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
+    
     global gdbItemID
     gdbItemID = result.id
 
