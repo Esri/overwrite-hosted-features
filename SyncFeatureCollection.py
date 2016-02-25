@@ -295,12 +295,16 @@ def updateFeatureService():
             if lyr is not None:
                 lyr['name'] = map[1]
 
-    result = usercontent.publishItem(fileType="fileGeodatabase", 
-                                        publishParameters=CustomPublishParameter(publishParams),  
-                                        itemId=gdbItemID, 
-                                        wait=True, overwrite=True)
-
-    logMessage("{} feature service updated".format(baseName))
+    ex = None
+    try:
+        result = usercontent.publishItem(fileType="fileGeodatabase", 
+                                            publishParameters=CustomPublishParameter(publishParams),  
+                                            itemId=gdbItemID, 
+                                            wait=True, overwrite=True)
+  
+        logMessage("{} feature service updated".format(baseName))
+    except Exception as ex:
+        pass
 
     for id in complexRenderers: # Set the renderer definition back on the layer after overwrite completes
         fl = FeatureLayer(url=url + "/" + str(id),
@@ -322,6 +326,10 @@ def updateFeatureService():
             logMessage("{} drawing info updated".format(fl.name))
         else:
             logMessage("{} drawing info failed to update".format(fl.name))
+
+    if ex is not None:
+        logMessage("{} feature service failed to update".format(baseName))
+        raise ex
 
 def exportTempFeatureCollection():
     """Exports the feature service to a temporary feature collection."""
