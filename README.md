@@ -52,5 +52,5 @@ limitations under the License.
 A copy of the license is available in the repository's
 [LICENSE.txt](LICENSE.txt) file.
 
-[](Esri Tags: ArcGISSolutions State-Government Local-Government Emergency-Management State Local Government Emergency Management Configurable Locator)
-[](Esri Language: JavaScript)
+[](Esri Tags: ArcGISSolutions State-Government State Government Transportation 511 Script)
+[](Esri Language: Python)
