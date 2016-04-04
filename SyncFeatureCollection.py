@@ -1,4 +1,4 @@
-"""
+﻿"""
 -------------------------------------------------------------------------------
  | Copyright 2016 Esri
  |
@@ -15,49 +15,534 @@
  | limitations under the License.
  ------------------------------------------------------------------------------
  """
-import datetime, time, os, sys, traceback, gzip, json, arcresthelper
-from arcrest import manageorg
-from arcrest.agol import FeatureLayer
-from io import BytesIO
+# pylint: disable=I0011,C0410,C0301,C0303,W0703,R0903
+
+import datetime, time, os, sys, traceback, gzip, json, email.generator, mimetypes, shutil, io
 
 try:
-    import http.client as client
-    import urllib.parse as parse
     from urllib.request import urlopen as urlopen
     from urllib.request import Request as request
     from urllib.parse import urlencode as encode
     import configparser as configparser
+    from io import StringIO
 # py2
 except ImportError:
-    import httplib as client
-    from urllib2 import urlparse as parse
     from urllib2 import urlopen as urlopen
     from urllib2 import Request as request
     from urllib import urlencode as encode
     import ConfigParser as configparser
-    unicode = str
+    from cStringIO import StringIO
 
-logPath = None
-starttime = None
-tempFeatureCollectionItemID = None
-gdbItemID = None
-shh = None
-layerMapping = None
-
-class CustomPublishParameter():
-    _value = None
+class _MultiPartForm(object):
+    """Accumulate the data to be used when posting a form."""
+    PY2 = sys.version_info[0] == 2
+    PY3 = sys.version_info[0] == 3
+    files = []
+    form_fields = []
+    boundary = None
+    form_data = ""
     #----------------------------------------------------------------------
-    def __init__(self,
-                 value,
-                 ):
-        """Constructor"""
-        self._value = value
+    def __init__(self, param_dict, files):
+        self.boundary = None
+        self.files = []
+        self.form_data = ""
+        if len(self.form_fields) > 0:
+            self.form_fields = []
+
+        if len(param_dict) == 0:
+            self.form_fields = []
+        else:
+            for key, value in param_dict.items():
+                self.form_fields.append((key, value))
+                del key, value
+        if len(files) == 0:
+            self.files = []
+        else:
+            for key, value in files.items():
+                self.add_file(fieldname=key,
+                              filename=os.path.basename(value),
+                              filepath=value,
+                              mimetype=None)
+        self.boundary = email.generator._make_boundary()
+    #----------------------------------------------------------------------
+    def get_content_type(self):
+        """Gets the content type."""
+        return 'multipart/form-data; boundary=%s' % self.boundary
+    #----------------------------------------------------------------------
+    def add_field(self, name, value):
+        """Add a simple field to the form data."""
+        self.form_fields.append((name, value))
+    #----------------------------------------------------------------------
+    def add_file(self, fieldname, filename, filepath, mimetype=None):
+        """Add a file to be uploaded.
+        Inputs:
+           fieldname - name of the POST value
+           fieldname - name of the file to pass to the server
+           filePath - path to the local file on disk
+           mimetype - MIME stands for Multipurpose Internet Mail Extensions.
+             It's a way of identifying files on the Internet according to
+             their nature and format. Default is None.
+        """
+        body = filepath
+        if mimetype is None:
+            mimetype = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        self.files.append((fieldname, filename, mimetype, body))
     #----------------------------------------------------------------------
     @property
-    def value(self):
-        return self._value
+    def make_result(self):
+        """Returns the data for the request."""
+        if self.PY2:
+            self._py2()
+        elif self.PY3:
+            self._py3()
+        return self.form_data
+    #----------------------------------------------------------------------
+    def _py2(self):
+        """python 2.x version of formatting body data"""
+        boundary = self.boundary
+        buf = StringIO()
+        for (key, value) in self.form_fields:
+            buf.write('--%s\r\n' % boundary)
+            buf.write('Content-Disposition: form-data; name="%s"' % key)
+            buf.write('\r\n\r\n%s\r\n' % value)
+        for (key, filename, mimetype, filepath) in self.files:
+            if os.path.isfile(filepath):
+                buf.write('--{boundary}\r\n'
+                          'Content-Disposition: form-data; name="{key}"; '
+                          'filename="{filename}"\r\n'
+                          'Content-Type: {content_type}\r\n\r\n'.format(
+                              boundary=boundary,
+                              key=key,
+                              filename=filename,
+                              content_type=mimetype))
+                with open(filepath, "rb") as local_file:
+                    shutil.copyfileobj(local_file, buf)
+                buf.write('\r\n')
+        buf.write('--' + boundary + '--\r\n\r\n')
+        buf = buf.getvalue()
+        self.form_data = buf
+    #----------------------------------------------------------------------
+    def _py3(self):
+        """ python 3 method"""
+        boundary = self.boundary
+        buf = io.BytesIO()
+        textwriter = io.TextIOWrapper(
+            buf, 'utf8', newline='', write_through=True)
 
-def validateInput(config, group, name, type, required):
+        for (key, value) in self.form_fields:
+            textwriter.write(
+                '--{boundary}\r\n'
+                'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                '{value}\r\n'.format(
+                    boundary=boundary, key=key, value=value))
+        for(key, filename, mimetype, filepath) in self.files:
+            if os.path.isfile(filepath):
+                textwriter.write(
+                    '--{boundary}\r\n'
+                    'Content-Disposition: form-data; name="{key}"; '
+                    'filename="{filename}"\r\n'
+                    'Content-Type: {content_type}\r\n\r\n'.format(
+                        boundary=boundary, key=key, filename=filename,
+                        content_type=mimetype))
+                with open(filepath, "rb") as local_file:
+                    shutil.copyfileobj(local_file, buf)
+                textwriter.write('\r\n')
+        textwriter.write('--{}--\r\n\r\n'.format(boundary))
+        self.form_data = buf.getvalue()
+
+class _SyncFeatureCollection(object):
+
+    def __init__(self):
+        self._config_options = {}
+
+    def _read_config(self):
+        """Read the config and set global variables used in the script."""
+
+        config = configparser.ConfigParser()
+        config.readfp(open(os.path.join(sys.path[0], 'SyncFeatureCollection.cfg')))
+
+        log_path = _validate_input(config, 'Log File', 'path', 'path', False)
+        if log_path is not None:
+            self._config_options['log_path'] = log_path
+
+        is_verbose = _validate_input(config, 'Log File', 'isVerbose', 'bool', False)
+        if is_verbose is not None:
+            self._config_options['is_verbose'] = is_verbose
+
+        self._start_logging()
+
+        self._config_options['feature_service_id'] = _validate_input(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
+        self._config_options['feature_collection_id'] = _validate_input(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
+        self._config_options['fgdb'] = _validate_input(config, 'Data Sources', 'fgdb', 'path', True)
+        self._config_options['org_url'] = _validate_input(config, 'Portal Sharing URL', 'baseURL', 'url', True)
+        self._config_options['username'] = _validate_input(config, 'Portal Credentials', 'username', 'string', True)
+        self._config_options['pw'] = _validate_input(config, 'Portal Credentials', 'pw', 'string', True)
+
+        token_url = _validate_input(config, 'Portal Sharing URL', 'tokenURL', 'url', False)
+        if token_url is not None:
+            self._config_options['token_url'] = is_verbose
+
+        max_allowable_offset = _validate_input(config, 'Generalization', 'maxAllowableOffset', 'int', False)
+        if max_allowable_offset is not None:
+            self._config_options['max_allowable_offset'] = max_allowable_offset
+
+        layer_mapping = _validate_input(config, 'Layers', 'nameMapping', 'mapping', False)
+        if layer_mapping is not None:
+            self._config_options['layer_mapping'] = layer_mapping
+
+    def _start_logging(self):
+        """If a log file is specified in the config,
+        create it if it doesn't exist and write the start time of the run."""
+        self._config_options['start_time'] = datetime.datetime.now()
+
+        if 'log_path' in self._config_options:
+            log_path = self._config_options['log_path']
+            is_file = os.path.isfile(log_path)
+
+            logfile_location = os.path.abspath(os.path.dirname(log_path))
+            if not os.path.exists(logfile_location):
+                os.makedirs(logfile_location)
+
+            if is_file:
+                path = log_path
+            else:
+                path = os.path.join(logfile_location, "SyncLog.txt")
+
+            log_path = path
+            log = open(path, "a")
+            date = self._config_options['start_time'].strftime('%Y-%m-%d %H:%M:%S')
+            log.write("----------------------------" + "\n")
+            log.write("Begin Data Sync: " + str(date) + "\n")
+            log.close()
+
+    def _log_message(self, my_message, is_error=False):
+        """Log a new message and print to the python output.
+
+        Keyword arguments:
+        myMessage - the message to log
+        isError - indicates if the message is an error, used to log even when verbose logging is disabled
+        """
+        date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if 'log_path' in self._config_options and (('is_verbose' in self._config_options and self._config_options['is_verbose']) or is_error):
+            log = open(self._config_options['log_path'], "a")
+            log.write("     " + str(date) + " - " +my_message + "\n")
+            log.close()
+        print("     " + str(date) + " - " +my_message + "\n")
+
+    def _end_logging(self):
+        """If a log file is specified in the config write the elapsed time."""
+        if 'log_path' in self._config_options:
+            log = open(self._config_options['log_path'], "a")
+            endtime = datetime.datetime.now()
+
+            log.write("Elapsed Time: " + str(endtime - self._config_options['start_time']) + "\n")
+            log.close()
+
+    def _log_error(self, trace):
+        """Log an error message.
+        Keyword arguments:
+        trace - the traceback from the exception
+        """
+        tbinfo = traceback.format_tb(trace)
+        pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
+        self._log_message(pymsg, True)
+
+    def _url_request(self, url, request_parameters, request_type='GET', files=None, repeat=0, error_text="Error", raise_on_failure=True):
+        """Send a new request and format the json response.
+        Keyword arguments:
+        url - the url of the request
+        request_parameters - a dictionay containing the name of the parameter and its correspoinsding value
+        request_type - the type of request: 'GET', 'POST'
+        files - the files to be uploaded
+        repeat - the nuber of times to repeat the request in the case of a failure
+        error_text - the message to log if an error is returned
+        raise_on_failure - indicates if an exception should be raised if an error is returned and repeat is 0"""
+        if files is not None:
+            mpf = _MultiPartForm(param_dict=request_parameters, files=files)
+            req = request(url)
+            body = mpf.make_result
+            req.add_header('Content-type', mpf.get_content_type())
+            req.add_header('Content-length', len(body))
+            req.data = body
+        elif request_type == 'GET':
+            req = request('?'.join((url, encode(request_parameters))))
+        else:
+            headers = {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',}
+            req = request(url, encode(request_parameters).encode('UTF-8'), headers)
+
+        req.add_header('Accept-encoding', 'gzip')
+
+        response = urlopen(req)
+
+        if response.info().get('Content-Encoding') == 'gzip':
+            buf = io.BytesIO(response.read())
+            with gzip.GzipFile(fileobj=buf) as gzip_file:
+                response_bytes = gzip_file.read()
+        else:
+            response_bytes = response.read()
+
+        response_text = response_bytes.decode('UTF-8')
+        response_json = json.loads(response_text)
+
+        if "error" in response_json:
+            if repeat == 0:
+                if raise_on_failure:
+                    raise Exception("{0}: {1}".format(error_text, response_json['error']['message']))
+                return response_json
+
+            repeat -= 1
+            time.sleep(2)
+            response_json = self._url_request(
+                url, request_parameters, request_type, files, repeat, error_text)
+
+        return response_json
+
+    def _get_token(self):
+        """Returns a token for the given user and organization."""
+        query_dict = {'username': self._config_options['username'],
+                      'password': self._config_options['pw'],
+                      'expiration': '60',
+                      'referer': self._config_options['org_url'],
+                      'f': 'json'}
+
+        token_url = "https://www.arcgis.com/sharing/rest/generateToken"
+        if 'token_url' in self._config_options:
+            token_url = self._config_options['token_url']
+
+        token_response = self._url_request(token_url, query_dict, 'POST')
+
+        if "token" not in token_response:
+            raise Exception("Unable to connect to specified portal. Please verify you are passing in your correct portal url, token url, username and password.")
+        else:
+            return token_response['token']
+
+    def _wait_on_job(self, item_id, job_type, job_id, error_text):
+        """Waits for a job to complete, if it fails an exception is raised.
+
+        Keyword arguments:
+        item_id - the id of the item to get the status for
+        jobType - the type of job currently processing
+        jobId - the id of the pending job
+        errorText - the error to raise if the job fails"""
+        url = '{0}sharing/rest/content/users/{1}/items/{2}/status'.format(self._config_options['org_url'], self._config_options['username'], item_id)
+        parameters = {'token': self._get_token(), 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
+
+        status = "processing"
+        while status != "completed":
+            response = self._url_request(url, parameters, repeat=2, error_text=error_text)
+            status = response['status'].lower()
+            if status == 'failed':
+                raise Exception("{0}: {1}".format(error_text, str(response['statusMessage'])))
+            elif status == "completed":
+                break
+            time.sleep(2)
+
+    def _get_published_items(self):
+        """Validates the feature service and feature collection exist and sets global variables."""
+        url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_service_id'])
+        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        item = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(self._config_options['feature_service_id']))
+
+        self._config_options['basename'] = item['title']
+
+        url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_collection_id'])
+        item = self._url_request(url, request_parameters, error_text='Unable to find feature collection with ID: {}'.format(self._config_options['feature_collection_id']))
+
+        self._config_options['temp_fc_name'] = item['title'] + "_temp"
+        self._config_options['owner_folder'] = item['ownerFolder']
+
+    def _delete_item(self, item_id):
+        url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
+        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
+
+    def _find_and_delete_gdb(self, gdb_name):
+        url = '{0}sharing/rest/search'.format(self._config_options['org_url'])
+        request_parameters = {'f' : 'json', 'q' : 'SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
+                              'token' : self._get_token()}
+        response = self._url_request(url, request_parameters, error_text='Failed to upload file geodatabase')
+        results = response['results']
+        existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "SyncFeatureCollection" in r['tags']), None)
+        if existing_gdb is not None:
+            self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
+            self._delete_item(existing_gdb)
+            self._log_message("File geodatabase deleted")
+
+    def _upload_fgdb(self):
+        """Uploads the file geodatabase to the portal."""
+        fgdb = self._config_options['fgdb']
+
+        if not os.path.exists(fgdb):
+            raise Exception("File geodatabase {} could not be found".format(fgdb))
+        gdb_name = os.path.basename(fgdb)
+        self._log_message("Uploading file geodatabase")
+    
+        try:
+            request_parameters = {'f' : 'json', 'token' : self._get_token(), 'tags' : 'SyncFeatureCollection',
+                                  'itemType' : 'file', 'async' : False,
+                                  'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
+                                  'filename' : os.path.basename(fgdb), 'title' : self._config_options['basename'], }
+
+            url = '{0}sharing/rest/content/users/{1}/addItem'.format(self._config_options['org_url'], self._config_options['username'])
+            files = {}
+            files['file'] = fgdb
+            response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
+        except Exception:
+            self._find_and_delete_gdb(gdb_name)
+            response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
+    
+        self._config_options['gdb_item_id'] = response['id']
+        self._log_message("File geodatabase upload complete")
+
+    def _update_feature_service(self):
+        """Overwrites the feature service using the uploaded file geodatabase."""
+        basename = self._config_options['basename']
+        org_url = self._config_options['org_url']
+        feature_service_id = self._config_options['feature_service_id']
+
+        self._log_message("Updating {} feature service".format(basename))
+
+        url = '{0}sharing/rest/content/items/{1}'.format(org_url, feature_service_id)
+        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        response = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(feature_service_id))
+
+        fs_url = response['url']
+        feature_service = self._url_request(fs_url, request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service')
+        publish_params = feature_service
+        publish_params['name'] = os.path.basename(os.path.dirname(fs_url))
+
+        layers = self._url_request(fs_url + "/layers", request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service layers')
+        complex_renderers = {} # Overwriting a feature service from a FGDB does not support complext renderers
+        for layer in layers['layers']:
+            if 'drawingInfo' in layer:
+                if 'renderer' in layer['drawingInfo']:
+                    if 'type' in layer['drawingInfo']['renderer']:
+                        if layer['drawingInfo']['renderer']['type'] != 'simple':
+                            complex_renderers[layer['id']] = layer['drawingInfo']
+                            layer['drawingInfo'] = ""
+
+        publish_params['layers'] = layers['layers']
+        publish_params['tables'] = layers['tables']
+
+        if 'layer_mapping' in self._config_options: #The name of the layer needs to match the name of the feature class for it to be succesfully overwritten
+            for mapping in self._config_options['layer_mapping']:
+                lyr = next((i for i in publish_params['layers'] if i['name'] == mapping[0]), None)
+                if lyr is not None:
+                    lyr['name'] = mapping[1]
+
+        url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
+        request_parameters = {'f' : 'json', 'token' : self._get_token(),
+                              'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
+                              'overwrite' : True, 'fileType' : 'fileGeodatabase'}
+        ex = None
+        try:
+            response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
+            service = response['services'][0]
+            if 'error' in service:
+                raise Exception("Failed to update {0} feature service: {1}".format(basename, service['error']['message']))
+        except Exception as ex:
+            pass
+
+        self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {} feature service".format(basename))
+
+        for identifier in complex_renderers: # Set the renderer definition back on the layer after overwrite completes
+            find_string = "/rest/services"
+            index = fs_url.find(find_string)
+            admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
+            request_parameters = {'f' : 'json', 'token' : self._get_token(), 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
+            self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
+            self._log_message("Layer {} drawing info updated".format(identifier))
+
+        if ex is not None:
+            self._log_message("{} feature service failed to update".format(basename))
+            raise ex
+        self._log_message("{} feature service updated".format(basename))
+
+    def _export_temp_feature_collection(self):
+        """Exports the feature service to a temporary feature collection."""
+        basename = self._config_options['basename']
+        org_url = self._config_options['org_url']
+        feature_service_id = self._config_options['feature_service_id']
+
+        self._log_message("Exporting " + basename + " to a temporary feature collection")
+
+        exp_params = {}
+        if 'max_allowable_offset' in self._config_options:
+            exp_params.update({"maxAllowableOffset":self._config_options['max_allowable_offset']})
+
+        url = '{0}sharing/rest/content/users/{1}/export'.format(org_url, self._config_options['username'])
+        request_parameters = {'f' : 'json', 'token' : self._get_token(),
+                              'itemID' : feature_service_id, 'exportFormat' : 'feature collection',
+                              'exportParameters' : json.dumps(exp_params), 'title' : self._config_options['temp_fc_name']}
+
+        response = self._url_request(url, request_parameters, "POST", raise_on_failure=False)
+    
+        if 'exportItemId' in response:
+            self._config_options['temp_feature_collection_id'] = response['exportItemId']
+        else:
+            if 'error' in response:
+                raise Exception("Failed to export temporary feature collection: {0}".format(response['error']['message']))
+            else:
+                raise Exception("Failed to export temporary feature collection: {0}".format(response))
+
+        self._wait_on_job(self._config_options['temp_feature_collection_id'], "export", response['jobId'], "Failed to update export temp feature collection")
+        self._log_message("Temp feature collection created")
+
+    def _update_feature_collection(self):
+        """Updates the production feature collection using the features in the temporary feature collection."""
+        org_url = self._config_options['org_url']
+
+        self._log_message("Updating feature collection")
+
+        url = '{0}sharing/rest/content/items/{1}/data'.format(org_url, self._config_options['temp_feature_collection_id'])
+        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        updated_features = self._url_request(url, request_parameters, repeat=2, error_text='Failed to get json from temporary feature collection')
+
+        date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        user_folder = self._config_options['username']
+        owner_folder = self._config_options['owner_folder']
+        if owner_folder is not None:
+            user_folder = user_folder + "/" + str(owner_folder)
+
+        url = '{0}sharing/rest/content/users/{1}/items/{2}/update'.format(org_url, user_folder, self._config_options['feature_collection_id'])
+        request_parameters = {'f' : 'json', 'token' : self._get_token(), 'text' : json.dumps(updated_features), 'snippet' : str(date)}
+        self._url_request(url, request_parameters, "POST", repeat=2, error_text='Failed to update feature collection')
+
+        self._log_message("Feature collection updated")
+
+    def _remove_temp_content(self):
+        """Remove the temporary file geodatabase and feature collection from the portal."""
+        if 'gdb_item_id' in self._config_options:
+            response = self._delete_item(self._config_options['gdb_item_id'])
+            if 'success' in response and response['success']:
+                self._log_message("File geodatabase deleted")
+            else:
+                self._log_message("Failed to delete file geodatabase: {0}".format(response['error']['message']))
+
+        if 'temp_feature_collection_id' in self._config_options:
+            response = self._delete_item(self._config_options['temp_feature_collection_id'])
+            if 'success' in response and response['success']:
+                self._log_message("Temp feature collection deleted")
+            else:
+                self._log_message("Failed to delete temp feature collection: {0}".format(response['error']['message']))
+
+    def run(self):
+        """Run the feature collection sync."""
+        try:         
+            self._read_config()
+            self._get_published_items()
+            self._upload_fgdb()
+            self._update_feature_service()
+            self._export_temp_feature_collection()
+            self._update_feature_collection()
+        except Exception:
+            self._log_error(sys.exc_info()[2])
+        finally:
+            self._remove_temp_content()
+            self._end_logging()
+
+def _validate_input(config, group, name, variable_type, required):
     """Validates and returns the correspoinding value defined in the config.
 
     Keyword arguments:
@@ -67,381 +552,32 @@ def validateInput(config, group, name, type, required):
     type - the type of property, 'path', 'mapping' 'bool', otherwise return the raw string
     required - if the option is required and none is found than raise an exception
     """
-    try: 
+    try:
         value = config.get(group, name)
         if value == '':
             raise configparser.NoOptionError(name, group)
 
-        if type == 'path':
+        if variable_type == 'path':
             return os.path.normpath(value)
-        elif type == 'mapping':
+        elif variable_type == 'mapping':
             return list(v.split(',') for v in value.split(';'))
-        elif type == 'bool':
+        elif variable_type == 'bool':
             return value.lower() == 'true'
         else:
             return value
     except (configparser.NoSectionError, configparser.NoOptionError):
         if required:
             raise
-        elif type == 'bool':
+        elif variable_type == 'bool':
             return False
         else:
             return None
 
-def readConfig():
-    """Read the config and set global variables used in the script."""  
-    config = configparser.ConfigParser()
-    config.readfp(open(os.path.join(sys.path[0], 'SyncFeatureCollection.cfg')))
+def run():
+    """Run the feature collection sync."""
+    sync = _SyncFeatureCollection()
+    sync.run()
 
-    global logPath
-    logPath = validateInput(config, 'Log File', 'path', 'path', False)
-
-    global isVerbose
-    isVerbose = validateInput(config, 'Log File', 'isVerbose', 'bool', False)
-    
-    startLogging()
-
-    global featureServiceItemID
-    featureServiceItemID = validateInput(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
-
-    global featureCollectionItemID
-    featureCollectionItemID = validateInput(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
-
-    global fgdb
-    fgdb = validateInput(config, 'Data Sources', 'fgdb', 'path', True)
-
-    global orgURL
-    orgURL = validateInput(config, 'Portal Sharing URL', 'baseURL', 'url', True)
-
-    global tokenURL
-    tokenURL = validateInput(config, 'Portal Sharing URL', 'tokenURL', 'url', False)
-
-    global username
-    username = validateInput(config, 'Portal Credentials', 'username', 'string', True)
-
-    global pw
-    pw = validateInput(config, 'Portal Credentials', 'pw', 'string', True)
-
-    global maxAllowableOffset
-    maxAllowableOffset = validateInput(config, 'Generalization', 'maxAllowableOffset', 'int', False)
-
-    global layerMapping
-    layerMapping = validateInput(config, 'Layers', 'nameMapping', 'mapping', False)
-
-def startLogging():
-    """If a log file is specified in the config, create it if it doesn't exist and write the start time of the run.""" 
-    global starttime
-    starttime = datetime.datetime.now()
-    
-    global logPath
-    if logPath is not None:  
-        isFile = os.path.isfile(logPath)
-
-        logfileLocation = os.path.abspath(os.path.dirname(logPath))
-        if not os.path.exists(logfileLocation):
-            os.makedirs(logfileLocation)
-
-        if isFile:
-            path = logPath
-        else:
-            path = os.path.join(logfileLocation, "SyncLog.txt")
-       
-        logPath = path
-        log = open(path,"a")
-        d = starttime.strftime('%Y-%m-%d %H:%M:%S')
-        log.write("----------------------------" + "\n")
-        log.write("Begin Data Sync: " + str(d) + "\n")
-        log.close()
-
-def logMessage(myMessage, isError=False):
-    """Log a new message and print to the python output.
-    
-    Keyword arguments:
-    myMessage - the message to log
-    isError - indicates if the message is an error, used to log even when verbose logging is disabled
-    """
-    d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    if logPath is not None and (isVerbose or isError):
-        log = open(logPath,"a")
-        log.write("     " + str(d) + " - " +myMessage + "\n")
-        log.close()
-    print("     " + str(d) + " - " +myMessage + "\n")
-
-def endLogging():
-    """If a log file is specified in the config write the elapsed time."""
-    if logPath is not None:
-        global starttime
-        log = open(logPath,"a")
-        endtime = datetime.datetime.now()
-        # Process Completed...
-        log.write("Elapsed Time: " + str(endtime - starttime) + "\n")
-        log.close()
-
-def logError(tb):
-    """Log an error message.
-    
-    Keyword arguments:
-    tb - the traceback from the exception"""
-    tbinfo = traceback.format_tb(tb)
-    tbinfo = traceback.format_tb(tb)
-    pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
-    logMessage(pymsg, True)
-
-def deleteItem(itemID):
-    """Delete an item from the organization.
-    
-    Keyword arguments:
-    itemID - the id of the item to delete"""
-    org = manageorg.Administration(securityHandler=shh.securityhandler)
-    usercontent = org.content.users.user(username)
-    usercontent.deleteItems(items=itemID)
-
-def getJSON(url):
-    """Get the json defintion of a feature service or feature collection.
-    
-    Keyword arguments:
-    url - the url of the item."""
-    request_parameters = {'f' : 'json','token' : shh.securityhandler.token }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',}
-
-    req = request(url, encode(request_parameters).encode('UTF-8'), headers)
-    req.add_header('Accept-encoding', 'gzip')
-    response = urlopen(req)
-
-    if response.info().get('Content-Encoding') == 'gzip':
-        buf = BytesIO(response.read())
-        with gzip.GzipFile(fileobj=buf) as gzip_file:
-            response_bytes = gzip_file.read()
-    else:
-        response_bytes = response.read()
-    return response_bytes.decode('UTF-8')
-
-def getPublishedItems():
-    """Validates the feature service and feature collection exist and sets global variables."""
-    admin = manageorg.Administration(securityHandler=shh.securityhandler)
-    content = admin.content
-
-    #Test if item ID does not exist and return error message
-    item = content.getItem(itemId=featureServiceItemID)
-    if item.id is None:
-        raise Exception('Unable to find feature service with ID: {}'.format(featureServiceItemID))
-
-    global baseName
-    baseName = item.title 
-
-    #Get the prepublished feature collection name
-    fcItem = content.getItem(itemId=featureCollectionItemID)
-    if fcItem.id is None:
-        raise Exception('Unable to find feature collection with ID: {}'.format(featureCollectionItemID))
-
-    global tempFCName
-    tempFCName = fcItem.title + "_temp"
-
-def uploadFGDB():
-    """Uploads the file geodatabase to the portal."""
-    org = manageorg.Administration(securityHandler=shh.securityhandler)
-
-    if not os.path.exists(fgdb):
-        raise Exception("File GDB: {} could not be found".format(fgdb))
-
-    logMessage("Uploading file geodatabase")
-
-    itemParams = manageorg.ItemParameter()
-    itemParams.title = baseName #this name should be derived from the fGDB
-    itemParams.type = "File Geodatabase"
-    itemParams.tags = "SyncFeatureCollection"
-    itemParams.typeKeywords = "Data,File Geodatabase"
-
-    content = org.content
-    usercontent = content.users.user(username)
-
-    gdbSize = float(os.path.getsize(fgdb)) / (1024 * 1024)
-    gdbName = os.path.basename(fgdb)
-
-    #If larger than 100 MBs we should set multipart to true
-    try:
-        result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
-    except:
-        search = org.search(q='SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(username))
-
-        results = search['results']
-        existingGDB = next((r['id'] for r in results if (r['name'] == gdbName and "SyncFeatureCollection" in r['tags'])), None)
-        if existingGDB is not None:
-            logMessage("File geodatabase {} found on the portal, deleting the item".format(gdbName))
-            deleteItem(existingGDB)
-            logMessage("File geodatabase deleted")
-
-        result = usercontent.addItem(itemParameters=itemParams, filePath=fgdb, multipart=gdbSize > 100)
-    
-    global gdbItemID
-    gdbItemID = result.id
-
-    logMessage("File geodatabase upload complete")
-
-def updateFeatureService():
-    """Overwrites the feature service using the uploaded file geodatabase."""
-    logMessage("Updating {} feature service".format(baseName))
-
-    org = manageorg.Administration(securityHandler=shh.securityhandler)
-    content = org.content
-    usercontent = content.users.user(username)
-
-    item = content.getItem(itemId=featureServiceItemID)
-    url = item.url
-
-    publishParams = json.loads(getJSON(url))
-    publishParams['name'] = os.path.basename(os.path.dirname(url))
-    layersJSON = getJSON(url + "/layers")    
-    layers = json.loads(layersJSON)
-
-    complexRenderers = {} # Overwriting a feature service from a FGDB does not support complext renderers
-    for layer in layers['layers']:
-        if 'drawingInfo' in layer:
-            if 'renderer' in layer['drawingInfo']:
-                if 'type' in layer['drawingInfo']['renderer']:
-                    if layer['drawingInfo']['renderer']['type'] != 'simple':
-                        complexRenderers[layer['id']] = layer['drawingInfo']
-                        layer['drawingInfo'] = ""             
-
-    publishParams['layers'] = layers['layers']
-    publishParams['tables'] = layers['tables']
-   
-    if layerMapping is not None: # Name of the layer must match the name of the feature class in the GDB
-        for map in layerMapping:
-            lyr = next((i for i in publishParams['layers'] if i['name'] == map[0]), None)
-            if lyr is not None:
-                lyr['name'] = map[1]
-
-    ex = None
-    try:
-        result = usercontent.publishItem(fileType="fileGeodatabase", 
-                                            publishParameters=CustomPublishParameter(publishParams),  
-                                            itemId=gdbItemID, 
-                                            wait=True, overwrite=True)
-  
-        logMessage("{} feature service updated".format(baseName))
-    except Exception as ex:
-        pass
-
-    for id in complexRenderers: # Set the renderer definition back on the layer after overwrite completes
-        fl = FeatureLayer(url=url + "/" + str(id),
-        securityHandler=shh.securityhandler,
-        initialize=True)
-
-        logMessage("Updating {} drawing info".format(fl.name))
-        adminFl = fl.administration
-        succeed = False
-        for i in range(3):
-            try:
-                adminFl.updateDefinition({'drawingInfo':complexRenderers[id]})
-                succeed = True
-                break
-            except:
-                continue
-
-        if succeed:
-            logMessage("{} drawing info updated".format(fl.name))
-        else:
-            logMessage("{} drawing info failed to update".format(fl.name))
-
-    if ex is not None:
-        logMessage("{} feature service failed to update".format(baseName))
-        raise ex
-
-def exportTempFeatureCollection():
-    """Exports the feature service to a temporary feature collection."""
-    logMessage("Exporting " + baseName + " to a temporary feature collection")    
-
-    org = manageorg.Administration(securityHandler=shh.securityhandler)
-    content = org.content
-    usercontent = content.users.user(username)
-    expParams = {}
-    if maxAllowableOffset is not None:
-       expParams.update({"maxAllowableOffset":maxAllowableOffset})
- 
-    global tempFeatureCollectionItemID
-    result = usercontent.exportItem(title=tempFCName,
-                                itemId=featureServiceItemID,
-                                exportFormat="feature collection",
-                                exportParameters=expParams,
-                                wait=False)
-    jobID = result[0]
-    userItem = result[1]
-    tempFeatureCollectionItemID = userItem.id
-
-    status = "processing"
-    while status != "completed":
-        status = userItem.status(jobId=jobID, jobType="export")
-        if status['status'].lower() == 'failed':
-            raise Exception("Could not export item: {}".format(tempFeatureCollectionItemID))
-        elif status['status'].lower() == 'completed':
-            break
-        time.sleep(2)  
-              
-    logMessage("Temp feature collection created")                    
-
-def updateFeatureCollection():
-    """Updates the productiong feature collection using the features in the temporary feature collection."""
-    admin = manageorg.Administration(securityHandler=shh.securityhandler)
-    content = admin.content
-    item = content.getItem(featureCollectionItemID)
-
-    logMessage("Updating {} feature collection".format(item.name))
-
-    updatedFeatures = json.loads(getJSON(orgURL + "/sharing/rest/content/items/" + tempFeatureCollectionItemID + "/data"))
-
-    d = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    itemParams = manageorg.ItemParameter()
-    itemParams.snippet = str(d)
-    item.userItem.updateItem(itemParameters=itemParams, text=json.dumps(updatedFeatures))
-    logMessage("{} feature collection updated".format(item.name))
-
-def removeTempContent():
-    """Remove the temporary file geodatabase and feature collection from the portal."""
-    if shh is not None:
-        org = manageorg.Administration(securityHandler=shh.securityhandler)
-        content = org.content
-        usercontent = content.users.user(username)
-        
-        if gdbItemID is not None:
-            gdbItem = content.getItem(itemId=gdbItemID)
-            if gdbItem.id is not None:
-                deleteItem(gdbItem.id)
-                logMessage("File geodatabase deleted")
-
-        if tempFeatureCollectionItemID is not None:
-            fcItem = content.getItem(itemId=tempFeatureCollectionItemID)
-            if fcItem.id is not None:
-                deleteItem(fcItem.id)
-                logMessage("Temp feature collection deleted")
-
-def main():
-    readConfig()
-    
-    securityinfo = {}
-    securityinfo['username'] = username
-    securityinfo['password'] = pw
-    securityinfo['org_url'] = orgURL
-    securityinfo['token_url'] = tokenURL
-
-    global shh
-    shh = arcresthelper.securityhandlerhelper.securityhandlerhelper(securityinfo)
-
-    if not shh.securityhandler.valid:
-        raise Exception("Unable to connect to specified portal. Please verify you are passing in your correct portal url, username and password.")
-
-    getPublishedItems()  
-    uploadFGDB()
-    updateFeatureService()
-    exportTempFeatureCollection()
-    updateFeatureCollection()
-    
 if __name__ == "__main__":
-    try:
-        main()
-    except:
-        logError(sys.exc_info()[2]) 
-    finally:
-        removeTempContent()
-        endLogging()  
+    run()
+
