@@ -15,7 +15,7 @@
  | limitations under the License.
  ------------------------------------------------------------------------------
  """
-# pylint: disable=I0011,C0410,C0301,C0303,W0703,R0903
+# pylint: disable=I0011,C0410,C0301,C0303,W0703,R0903,R0913,R0914
 
 import datetime, time, os, sys, traceback, gzip, json, email.generator, mimetypes, shutil, io
 
@@ -155,11 +155,13 @@ class _SyncFeatureCollection(object):
     def __init__(self):
         self._config_options = {}
 
-    def _read_config(self):
+    def _read_config(self, config_file):
         """Read the config and set global variables used in the script."""
 
         config = configparser.ConfigParser()
-        config.readfp(open(os.path.join(sys.path[0], 'SyncFeatureCollection.cfg')))
+        if config_file is None:
+            config_file = os.path.join(os.path.dirname(__file__), 'SyncFeatureCollection.cfg')
+        config.readfp(open(config_file))
 
         log_path = _validate_input(config, 'Log File', 'path', 'path', False)
         if log_path is not None:
@@ -172,8 +174,15 @@ class _SyncFeatureCollection(object):
         self._start_logging()
 
         self._config_options['feature_service_id'] = _validate_input(config, 'Existing ItemIDs', 'featureServiceItemID', 'id', True)
-        self._config_options['feature_collection_id'] = _validate_input(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', True)
-        self._config_options['fgdb'] = _validate_input(config, 'Data Sources', 'fgdb', 'path', True)
+
+        feature_collection_id = _validate_input(config, 'Existing ItemIDs', 'featureCollectionItemID', 'id', False)
+        if feature_collection_id is not None:
+            self._config_options['feature_collection_id'] = feature_collection_id
+        
+        fgdb = _validate_input(config, 'Data Sources', 'fgdb', 'path', False)
+        if fgdb is not None:
+            self._config_options['fgdb'] = fgdb
+        
         self._config_options['org_url'] = _validate_input(config, 'Portal Sharing URL', 'baseURL', 'url', True)
         self._config_options['username'] = _validate_input(config, 'Portal Credentials', 'username', 'string', True)
         self._config_options['pw'] = _validate_input(config, 'Portal Credentials', 'pw', 'string', True)
@@ -287,7 +296,7 @@ class _SyncFeatureCollection(object):
         if "error" in response_json:
             if repeat == 0:
                 if raise_on_failure:
-                    raise Exception("{0}: {1}".format(error_text, response_json['error']['message']))
+                    raise Exception("{0}: {1}".format(error_text, response_json))
                 return response_json
 
             repeat -= 1
@@ -309,7 +318,7 @@ class _SyncFeatureCollection(object):
         if 'token_url' in self._config_options:
             token_url = self._config_options['token_url']
 
-        token_response = self._url_request(token_url, query_dict, 'POST')
+        token_response = self._url_request(token_url, query_dict, 'POST', repeat=2, raise_on_failure=False)
 
         if "token" not in token_response:
             raise Exception("Unable to connect to specified portal. Please verify you are passing in your correct portal url, token url, username and password.")
@@ -325,7 +334,7 @@ class _SyncFeatureCollection(object):
         jobId - the id of the pending job
         errorText - the error to raise if the job fails"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/status'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-        parameters = {'token': self._get_token(), 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
+        parameters = {'token': self._config_options['token'] , 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
 
         status = "processing"
         while status != "completed":
@@ -340,26 +349,33 @@ class _SyncFeatureCollection(object):
     def _get_published_items(self):
         """Validates the feature service and feature collection exist and sets global variables."""
         url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_service_id'])
-        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
         item = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(self._config_options['feature_service_id']))
+
+        if not item['type'] == 'Feature Service':
+            raise Exception("Item {} is not a feature service".format(self._config_options['feature_service_id'])) 
 
         self._config_options['basename'] = item['title']
 
-        url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_collection_id'])
-        item = self._url_request(url, request_parameters, error_text='Unable to find feature collection with ID: {}'.format(self._config_options['feature_collection_id']))
+        if 'feature_collection_id' in self._config_options:
+            url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_collection_id'])
+            item = self._url_request(url, request_parameters, error_text='Unable to find feature collection with ID: {}'.format(self._config_options['feature_collection_id']))
 
-        self._config_options['temp_fc_name'] = item['title'] + "_temp"
-        self._config_options['owner_folder'] = item['ownerFolder']
+            if not item['type'] == 'Feature Collection':
+                raise Exception("Item {} is not a feature collection".format(self._config_options['feature_collection_id'])) 
+
+            self._config_options['temp_fc_name'] = item['title'] + "_temp"
+            self._config_options['owner_folder'] = item['ownerFolder']
 
     def _delete_item(self, item_id):
         url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
         return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
 
     def _find_and_delete_gdb(self, gdb_name):
         url = '{0}sharing/rest/search'.format(self._config_options['org_url'])
         request_parameters = {'f' : 'json', 'q' : 'SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
-                              'token' : self._get_token()}
+                              'token' : self._config_options['token'] }
         response = self._url_request(url, request_parameters, error_text='Failed to upload file geodatabase')
         results = response['results']
         existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "SyncFeatureCollection" in r['tags']), None)
@@ -375,10 +391,10 @@ class _SyncFeatureCollection(object):
         if not os.path.exists(fgdb):
             raise Exception("File geodatabase {} could not be found".format(fgdb))
         gdb_name = os.path.basename(fgdb)
-        self._log_message("Uploading file geodatabase")
+        self._log_message("Uploading file geodatabase {}".format(fgdb))
     
         try:
-            request_parameters = {'f' : 'json', 'token' : self._get_token(), 'tags' : 'SyncFeatureCollection',
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'tags' : 'SyncFeatureCollection',
                                   'itemType' : 'file', 'async' : False,
                                   'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
                                   'filename' : os.path.basename(fgdb), 'title' : self._config_options['basename'], }
@@ -403,7 +419,7 @@ class _SyncFeatureCollection(object):
         self._log_message("Updating {} feature service".format(basename))
 
         url = '{0}sharing/rest/content/items/{1}'.format(org_url, feature_service_id)
-        request_parameters = {'f' : 'json', 'token' : self._get_token()}
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
         response = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(feature_service_id))
 
         fs_url = response['url']
@@ -431,73 +447,58 @@ class _SyncFeatureCollection(object):
                     lyr['name'] = mapping[1]
 
         url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._get_token(),
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] ,
                               'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
                               'overwrite' : True, 'fileType' : 'fileGeodatabase'}
-        ex = None
+        exception_raised = False
         try:
             response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
             service = response['services'][0]
             if 'error' in service:
                 raise Exception("Failed to update {0} feature service: {1}".format(basename, service['error']['message']))
         except Exception as ex:
-            pass
+            exception_raised = True
 
-        self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {} feature service".format(basename))
+        self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {0} feature service, job id: {1}".format(basename, service['jobId']))
 
         for identifier in complex_renderers: # Set the renderer definition back on the layer after overwrite completes
             find_string = "/rest/services"
             index = fs_url.find(find_string)
             admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
-            request_parameters = {'f' : 'json', 'token' : self._get_token(), 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
             self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
             self._log_message("Layer {} drawing info updated".format(identifier))
 
-        if ex is not None:
+        if exception_raised:
             self._log_message("{} feature service failed to update".format(basename))
             raise ex
         self._log_message("{} feature service updated".format(basename))
 
-    def _export_temp_feature_collection(self):
+    def _update_feature_collection(self):
         """Exports the feature service to a temporary feature collection."""
-        basename = self._config_options['basename']
         org_url = self._config_options['org_url']
         feature_service_id = self._config_options['feature_service_id']
+        feature_collection_id = self._config_options['feature_collection_id']
 
-        self._log_message("Exporting " + basename + " to a temporary feature collection")
+        self._log_message("Updating feature collection")
 
         exp_params = {}
         if 'max_allowable_offset' in self._config_options:
             exp_params.update({"maxAllowableOffset":self._config_options['max_allowable_offset']})
 
         url = '{0}sharing/rest/content/users/{1}/export'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._get_token(),
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] ,
                               'itemID' : feature_service_id, 'exportFormat' : 'feature collection',
-                              'exportParameters' : json.dumps(exp_params), 'title' : self._config_options['temp_fc_name']}
+                              'exportParameters' : json.dumps(exp_params),
+                              'overwrite' : True, 'resultItemId' : feature_collection_id}
 
         response = self._url_request(url, request_parameters, "POST", raise_on_failure=False)
     
-        if 'exportItemId' in response:
-            self._config_options['temp_feature_collection_id'] = response['exportItemId']
-        else:
-            if 'error' in response:
-                raise Exception("Failed to export temporary feature collection: {0}".format(response['error']['message']))
-            else:
-                raise Exception("Failed to export temporary feature collection: {0}".format(response))
+        if 'jobId' not in response:
+            raise Exception("Failed to export temporary feature collection: {0}".format(response))
 
-        self._wait_on_job(self._config_options['temp_feature_collection_id'], "export", response['jobId'], "Failed to update export temp feature collection")
-        self._log_message("Temp feature collection created")
-
-    def _update_feature_collection(self):
-        """Updates the production feature collection using the features in the temporary feature collection."""
-        org_url = self._config_options['org_url']
-
-        self._log_message("Updating feature collection")
-
-        url = '{0}sharing/rest/content/items/{1}/data'.format(org_url, self._config_options['temp_feature_collection_id'])
-        request_parameters = {'f' : 'json', 'token' : self._get_token()}
-        updated_features = self._url_request(url, request_parameters, repeat=2, error_text='Failed to get json from temporary feature collection')
-
+        self._wait_on_job(feature_collection_id, "export", response['jobId'], "Failed to update feature collection, job id: {0}".format(response['jobId']))
+        
         date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         user_folder = self._config_options['username']
@@ -506,9 +507,9 @@ class _SyncFeatureCollection(object):
             user_folder = user_folder + "/" + str(owner_folder)
 
         url = '{0}sharing/rest/content/users/{1}/items/{2}/update'.format(org_url, user_folder, self._config_options['feature_collection_id'])
-        request_parameters = {'f' : 'json', 'token' : self._get_token(), 'text' : json.dumps(updated_features), 'snippet' : str(date)}
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'snippet' : str(date)}
         self._url_request(url, request_parameters, "POST", repeat=2, error_text='Failed to update feature collection')
-
+        
         self._log_message("Feature collection updated")
 
     def _remove_temp_content(self):
@@ -518,24 +519,19 @@ class _SyncFeatureCollection(object):
             if 'success' in response and response['success']:
                 self._log_message("File geodatabase deleted")
             else:
-                self._log_message("Failed to delete file geodatabase: {0}".format(response['error']['message']))
+                self._log_message("Failed to delete file geodatabase: {0}".format(response))
 
-        if 'temp_feature_collection_id' in self._config_options:
-            response = self._delete_item(self._config_options['temp_feature_collection_id'])
-            if 'success' in response and response['success']:
-                self._log_message("Temp feature collection deleted")
-            else:
-                self._log_message("Failed to delete temp feature collection: {0}".format(response['error']['message']))
-
-    def run(self):
+    def run(self, config_file):
         """Run the feature collection sync."""
         try:         
-            self._read_config()
+            self._read_config(config_file)
+            self._config_options['token'] = self._get_token()
             self._get_published_items()
-            self._upload_fgdb()
-            self._update_feature_service()
-            self._export_temp_feature_collection()
-            self._update_feature_collection()
+            if 'fgdb' in self._config_options:
+                self._upload_fgdb()
+                self._update_feature_service()
+            if 'feature_collection_id' in self._config_options:
+                self._update_feature_collection()
         except Exception:
             self._log_error(sys.exc_info()[2])
         finally:
@@ -573,11 +569,15 @@ def _validate_input(config, group, name, variable_type, required):
         else:
             return None
 
-def run():
+def run(config_file=None):
     """Run the feature collection sync."""
     sync = _SyncFeatureCollection()
-    sync.run()
+    sync.run(config_file)
 
 if __name__ == "__main__":
-    run()
+    CONFIG_FILE = None
+    if len(sys.argv) > 1:
+        CONFIG_FILE = sys.argv[1]
+    run(CONFIG_FILE)
+
 
