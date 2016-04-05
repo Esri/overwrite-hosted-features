@@ -334,7 +334,7 @@ class _SyncFeatureCollection(object):
         jobId - the id of the pending job
         errorText - the error to raise if the job fails"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/status'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-        parameters = {'token': self._config_options['token'] , 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
+        parameters = {'token': self._config_options['token'], 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
 
         status = "processing"
         while status != "completed":
@@ -349,7 +349,7 @@ class _SyncFeatureCollection(object):
     def _get_published_items(self):
         """Validates the feature service and feature collection exist and sets global variables."""
         url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_service_id'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
         item = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(self._config_options['feature_service_id']))
 
         if not item['type'] == 'Feature Service':
@@ -369,13 +369,13 @@ class _SyncFeatureCollection(object):
 
     def _delete_item(self, item_id):
         url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
         return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
 
     def _find_and_delete_gdb(self, gdb_name):
         url = '{0}sharing/rest/search'.format(self._config_options['org_url'])
         request_parameters = {'f' : 'json', 'q' : 'SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
-                              'token' : self._config_options['token'] }
+                              'token' : self._config_options['token']}
         response = self._url_request(url, request_parameters, error_text='Failed to upload file geodatabase')
         results = response['results']
         existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "SyncFeatureCollection" in r['tags']), None)
@@ -394,10 +394,10 @@ class _SyncFeatureCollection(object):
         self._log_message("Uploading file geodatabase {}".format(fgdb))
     
         try:
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'tags' : 'SyncFeatureCollection',
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'tags' : 'SyncFeatureCollection',
                                   'itemType' : 'file', 'async' : False,
                                   'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
-                                  'filename' : os.path.basename(fgdb), 'title' : self._config_options['basename'], }
+                                  'filename' : os.path.basename(fgdb), 'title' : self._config_options['basename']}
 
             url = '{0}sharing/rest/content/users/{1}/addItem'.format(self._config_options['org_url'], self._config_options['username'])
             files = {}
@@ -419,7 +419,7 @@ class _SyncFeatureCollection(object):
         self._log_message("Updating {} feature service".format(basename))
 
         url = '{0}sharing/rest/content/items/{1}'.format(org_url, feature_service_id)
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] }
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
         response = self._url_request(url, request_parameters, error_text='Unable to find feature service with ID: {}'.format(feature_service_id))
 
         fs_url = response['url']
@@ -447,7 +447,7 @@ class _SyncFeatureCollection(object):
                     lyr['name'] = mapping[1]
 
         url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] ,
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
                               'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
                               'overwrite' : True, 'fileType' : 'fileGeodatabase'}
         exception_raised = False
@@ -465,7 +465,7 @@ class _SyncFeatureCollection(object):
             find_string = "/rest/services"
             index = fs_url.find(find_string)
             admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
             self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
             self._log_message("Layer {} drawing info updated".format(identifier))
 
@@ -487,7 +487,7 @@ class _SyncFeatureCollection(object):
             exp_params.update({"maxAllowableOffset":self._config_options['max_allowable_offset']})
 
         url = '{0}sharing/rest/content/users/{1}/export'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] ,
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
                               'itemID' : feature_service_id, 'exportFormat' : 'feature collection',
                               'exportParameters' : json.dumps(exp_params),
                               'overwrite' : True, 'resultItemId' : feature_collection_id}
@@ -507,7 +507,7 @@ class _SyncFeatureCollection(object):
             user_folder = user_folder + "/" + str(owner_folder)
 
         url = '{0}sharing/rest/content/users/{1}/items/{2}/update'.format(org_url, user_folder, self._config_options['feature_collection_id'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'] , 'snippet' : str(date)}
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'snippet' : str(date)}
         self._url_request(url, request_parameters, "POST", repeat=2, error_text='Failed to update feature collection')
         
         self._log_message("Feature collection updated")
