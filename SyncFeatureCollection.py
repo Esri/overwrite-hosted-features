@@ -252,7 +252,7 @@ class _SyncFeatureCollection(object):
 
     def _log_error(self):
         """Log an error message."""
-        pymsg = "PYTHON ERRORS:\nTraceback info:\n{1}\n\nError Info:\n{0}".format(sys.exc_info()[1].message, traceback.format_tb(sys.exc_info()[2]))
+        pymsg = "PYTHON ERRORS:\nTraceback info:\n{1}\nError Info:\n{0}".format(sys.exc_info()[1].message, "".join(traceback.format_tb(sys.exc_info()[2])))
         self._log_message(pymsg, True)
 
     def _url_request(self, url, request_parameters, request_type='GET', files=None, repeat=0, error_text="Error", raise_on_failure=True):
@@ -433,8 +433,17 @@ class _SyncFeatureCollection(object):
         feature_service = self._url_request(fs_url, request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service')
         publish_params = feature_service
         publish_params['name'] = os.path.basename(os.path.dirname(fs_url))
-
+        
         layers = self._url_request(fs_url + "/layers", request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service layers')
+        complex_renderers = {} # Overwriting a feature service from a FGDB does not support complex renderers
+        for layer in layers['layers']:
+            if 'drawingInfo' in layer:
+                if 'renderer' in layer['drawingInfo']:
+                    if 'type' in layer['drawingInfo']['renderer']:
+                        if layer['drawingInfo']['renderer']['type'] != 'simple':
+                            complex_renderers[layer['id']] = layer['drawingInfo']
+                            layer['drawingInfo'] = ""
+                            
         publish_params['layers'] = layers['layers']
         publish_params['tables'] = layers['tables']
 
@@ -453,9 +462,10 @@ class _SyncFeatureCollection(object):
                                       'overwrite' : True, 'fileType' : 'fileGeodatabase'}
                 response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
                 if 'services' not in response:
-                    raise Exception("Failed to update {0} feature service: {1}".format(basename, response))
-        
+                    raise Exception("Failed to update {0} feature service: {1}".format(basename, response))      
                 service = response['services'][0]
+                if 'jobId' not in service:
+                    raise Exception("Failed to update {0} feature service: {1}".format(basename, response))
                 self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {0} feature service, job id: {1}".format(basename, service['jobId']))
                 break
             except Exception as ex:
@@ -463,6 +473,15 @@ class _SyncFeatureCollection(object):
                 if i+1 == attempt_count:              
                     raise ex
                 self._log_message(ex.message)
+        
+        for identifier in complex_renderers: # Set the renderer definition back on the layer after overwrite completes
+            find_string = "/rest/services"
+            index = fs_url.find(find_string)
+            admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
+            self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
+            self._log_message("Layer {} drawing info updated".format(identifier))
+            
         self._log_message("{} feature service updated".format(basename))
 
     def _update_feature_collection(self):
