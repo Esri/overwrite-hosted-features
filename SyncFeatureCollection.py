@@ -15,8 +15,6 @@
  | limitations under the License.
  ------------------------------------------------------------------------------
  """
-# pylint: disable=I0011,C0410,C0301,C0303,W0703,R0903,R0913,R0914
-
 import datetime, time, os, sys, traceback, gzip, json, email.generator, mimetypes, shutil, io
 
 try:
@@ -156,7 +154,12 @@ class _SyncFeatureCollection(object):
         self._config_options = {}
 
     def _read_config(self, config_file):
-        """Read the config and set global variables used in the script."""
+        """Read the config and set global variables used in the script.
+        
+        Keyword arguments:
+        config_file - Path to the configuration file. 
+        If None it will look for a file called SyncFeatureCollection.cfg in the same directory as the executing script.
+        """
 
         config = configparser.ConfigParser()
         if config_file is None:
@@ -189,7 +192,7 @@ class _SyncFeatureCollection(object):
 
         token_url = _validate_input(config, 'Portal Sharing URL', 'tokenURL', 'url', False)
         if token_url is not None:
-            self._config_options['token_url'] = is_verbose
+            self._config_options['token_url'] = token_url
 
         max_allowable_offset = _validate_input(config, 'Generalization', 'maxAllowableOffset', 'int', False)
         if max_allowable_offset is not None:
@@ -228,8 +231,8 @@ class _SyncFeatureCollection(object):
         """Log a new message and print to the python output.
 
         Keyword arguments:
-        myMessage - the message to log
-        isError - indicates if the message is an error, used to log even when verbose logging is disabled
+        my_message - the message to log
+        is_error - indicates if the message is an error, used to log even when verbose logging is disabled
         """
         date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if 'log_path' in self._config_options and (('is_verbose' in self._config_options and self._config_options['is_verbose']) or is_error):
@@ -247,13 +250,9 @@ class _SyncFeatureCollection(object):
             log.write("Elapsed Time: " + str(endtime - self._config_options['start_time']) + "\n")
             log.close()
 
-    def _log_error(self, trace):
-        """Log an error message.
-        Keyword arguments:
-        trace - the traceback from the exception
-        """
-        tbinfo = traceback.format_tb(trace)
-        pymsg = "PYTHON ERRORS:\nTraceback info:\n" + "".join(tbinfo) + "\nError Info:\n" + str(sys.exc_info()[1])
+    def _log_error(self):
+        """Log an error message."""
+        pymsg = "PYTHON ERRORS:\nTraceback info:\n{1}\n\nError Info:\n{0}".format(sys.exc_info()[1].message, traceback.format_tb(sys.exc_info()[2]))
         self._log_message(pymsg, True)
 
     def _url_request(self, url, request_parameters, request_type='GET', files=None, repeat=0, error_text="Error", raise_on_failure=True):
@@ -330,9 +329,9 @@ class _SyncFeatureCollection(object):
 
         Keyword arguments:
         item_id - the id of the item to get the status for
-        jobType - the type of job currently processing
-        jobId - the id of the pending job
-        errorText - the error to raise if the job fails"""
+        job_type - the type of job currently processing
+        job_id - the id of the pending job
+        error_text - the error to raise if the job fails"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/status'.format(self._config_options['org_url'], self._config_options['username'], item_id)
         parameters = {'token': self._config_options['token'], 'f': 'json', 'jobType' : job_type, 'jobId' : job_id}
 
@@ -368,11 +367,19 @@ class _SyncFeatureCollection(object):
             self._config_options['owner_folder'] = item['ownerFolder']
 
     def _delete_item(self, item_id):
+        """Delete an item from the portal with a given id.
+
+        Keyword arguments:
+        item_id - the id of the item to delete"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
         request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
         return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
 
     def _find_and_delete_gdb(self, gdb_name):
+        """Search the portal for a geodatabase with a given name owned by the owner specified and if found delete the item.
+
+        Keyword arguments:
+        gdb_name - the name of the geodatabase"""
         url = '{0}sharing/rest/search'.format(self._config_options['org_url'])
         request_parameters = {'f' : 'json', 'q' : 'SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
                               'token' : self._config_options['token']}
@@ -428,15 +435,6 @@ class _SyncFeatureCollection(object):
         publish_params['name'] = os.path.basename(os.path.dirname(fs_url))
 
         layers = self._url_request(fs_url + "/layers", request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service layers')
-        complex_renderers = {} # Overwriting a feature service from a FGDB does not support complext renderers
-        for layer in layers['layers']:
-            if 'drawingInfo' in layer:
-                if 'renderer' in layer['drawingInfo']:
-                    if 'type' in layer['drawingInfo']['renderer']:
-                        if layer['drawingInfo']['renderer']['type'] != 'simple':
-                            complex_renderers[layer['id']] = layer['drawingInfo']
-                            layer['drawingInfo'] = ""
-
         publish_params['layers'] = layers['layers']
         publish_params['tables'] = layers['tables']
 
@@ -446,36 +444,29 @@ class _SyncFeatureCollection(object):
                 if lyr is not None:
                     lyr['name'] = mapping[1]
 
-        url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
-                              'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
-                              'overwrite' : True, 'fileType' : 'fileGeodatabase'}
-        exception_raised = False
-        try:
-            response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
-            service = response['services'][0]
-            if 'error' in service:
-                raise Exception("Failed to update {0} feature service: {1}".format(basename, service['error']['message']))
-        except Exception as ex:
-            exception_raised = True
-
-        self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {0} feature service, job id: {1}".format(basename, service['jobId']))
-
-        for identifier in complex_renderers: # Set the renderer definition back on the layer after overwrite completes
-            find_string = "/rest/services"
-            index = fs_url.find(find_string)
-            admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
-            self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
-            self._log_message("Layer {} drawing info updated".format(identifier))
-
-        if exception_raised:
-            self._log_message("{} feature service failed to update".format(basename))
-            raise ex
+        attempt_count = 2
+        for i in range(attempt_count):
+            try:         
+                url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
+                request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
+                                      'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
+                                      'overwrite' : True, 'fileType' : 'fileGeodatabase'}
+                response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
+                if 'services' not in response:
+                    raise Exception("Failed to update {0} feature service: {1}".format(basename, response))
+        
+                service = response['services'][0]
+                self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {0} feature service, job id: {1}".format(basename, service['jobId']))
+                break
+            except Exception as ex:
+                ex.message = "Attempt {0}: {1}".format(i+1, ex.message)
+                if i+1 == attempt_count:              
+                    raise ex
+                self._log_message(ex.message)
         self._log_message("{} feature service updated".format(basename))
 
     def _update_feature_collection(self):
-        """Exports the feature service to a temporary feature collection."""
+        """Overwrite the feature collection using the feature service."""
         org_url = self._config_options['org_url']
         feature_service_id = self._config_options['feature_service_id']
         feature_collection_id = self._config_options['feature_collection_id']
@@ -486,19 +477,28 @@ class _SyncFeatureCollection(object):
         if 'max_allowable_offset' in self._config_options:
             exp_params.update({"maxAllowableOffset":self._config_options['max_allowable_offset']})
 
-        url = '{0}sharing/rest/content/users/{1}/export'.format(org_url, self._config_options['username'])
-        request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
-                              'itemID' : feature_service_id, 'exportFormat' : 'feature collection',
-                              'exportParameters' : json.dumps(exp_params),
-                              'overwrite' : True, 'resultItemId' : feature_collection_id}
+        attempt_count = 2
+        for i in range(attempt_count):
+            try:
+                url = '{0}sharing/rest/content/users/{1}/export'.format(org_url, self._config_options['username'])
+                request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
+                                      'itemID' : feature_service_id, 'exportFormat' : 'feature collection',
+                                      'exportParameters' : json.dumps(exp_params),
+                                      'overwrite' : True, 'resultItemId' : feature_collection_id}
 
-        response = self._url_request(url, request_parameters, "POST", raise_on_failure=False)
+                response = self._url_request(url, request_parameters, "POST", raise_on_failure=False)
     
-        if 'jobId' not in response:
-            raise Exception("Failed to export temporary feature collection: {0}".format(response))
+                if 'jobId' not in response:
+                    raise Exception("Failed to export temporary feature collection: {0}".format(response))
 
-        self._wait_on_job(feature_collection_id, "export", response['jobId'], "Failed to update feature collection, job id: {0}".format(response['jobId']))
-        
+                self._wait_on_job(feature_collection_id, "export", response['jobId'], "Failed to update feature collection, job id: {0}".format(response['jobId']))
+                break
+            except Exception as ex:
+                ex.message = "Attempt {0}: {1}".format(i+1, ex.message)
+                if i+1 == attempt_count:              
+                    raise ex
+                self._log_message(ex.message)
+
         date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         user_folder = self._config_options['username']
@@ -513,7 +513,7 @@ class _SyncFeatureCollection(object):
         self._log_message("Feature collection updated")
 
     def _remove_temp_content(self):
-        """Remove the temporary file geodatabase and feature collection from the portal."""
+        """Remove the temporary file geodatabase if it exists."""
         if 'gdb_item_id' in self._config_options:
             response = self._delete_item(self._config_options['gdb_item_id'])
             if 'success' in response and response['success']:
@@ -533,7 +533,7 @@ class _SyncFeatureCollection(object):
             if 'feature_collection_id' in self._config_options:
                 self._update_feature_collection()
         except Exception:
-            self._log_error(sys.exc_info()[2])
+            self._log_error()
         finally:
             self._remove_temp_content()
             self._end_logging()
@@ -545,7 +545,7 @@ def _validate_input(config, group, name, variable_type, required):
     config - the instance of the configparser
     group - the name of the group containing the property
     name - the name of the property to get that value for
-    type - the type of property, 'path', 'mapping' 'bool', otherwise return the raw string
+    variable_type - the type of property, 'path', 'mapping' 'bool', otherwise return the raw string
     required - if the option is required and none is found than raise an exception
     """
     try:
