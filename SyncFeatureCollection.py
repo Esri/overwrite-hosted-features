@@ -386,10 +386,16 @@ class _SyncFeatureCollection(object):
         response = self._url_request(url, request_parameters, error_text='Failed to upload file geodatabase')
         results = response['results']
         existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "SyncFeatureCollection" in r['tags']), None)
-        if existing_gdb is not None:
-            self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
-            self._delete_item(existing_gdb)
+        if existing_gdb is None:
+            self._log_message("Failed to find file geodatabase on the portal named {0}: {1}".format(gdb_name, response))
+            return
+
+        self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
+        response = self._delete_item(existing_gdb)
+        if 'success' in response and response['success']:
             self._log_message("File geodatabase deleted")
+        else:
+            self._log_message("Failed to delete file geodatabase: {0}".format(response))
 
     def _upload_fgdb(self):
         """Uploads the file geodatabase to the portal."""
@@ -411,6 +417,7 @@ class _SyncFeatureCollection(object):
             files['file'] = fgdb
             response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
         except Exception:
+            self._log_message("Failed to upload file geodatabase. Searching the portal for a file geodatabase with the same name: {0}".format(response))
             self._find_and_delete_gdb(gdb_name)
             response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
     
