@@ -479,7 +479,11 @@ class _SyncFeatureCollection(object):
             index = fs_url.find(find_string)
             admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
             request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
-            self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to updated".format(identifier), raise_on_failure=False)
+            try: 
+                response = self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to update".format(identifier))
+            except Exception as ex:
+                self._log_message("Layer {0} drawing info failed to update: {1}".format(identifier, response))
+                continue
             self._log_message("Layer {} drawing info updated".format(identifier))
             
         self._log_message("{} feature service updated".format(basename))
