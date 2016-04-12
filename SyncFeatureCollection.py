@@ -417,7 +417,7 @@ class _SyncFeatureCollection(object):
             files['file'] = fgdb
             response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
         except Exception:
-            self._log_message("Failed to upload file geodatabase. Searching the portal for a file geodatabase with the same name: {0}".format(response))
+            self._log_message("Failed to upload file geodatabase. Searching the portal for a file geodatabase with the same name")
             self._find_and_delete_gdb(gdb_name)
             response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
     
@@ -441,16 +441,7 @@ class _SyncFeatureCollection(object):
         publish_params = feature_service
         publish_params['name'] = os.path.basename(os.path.dirname(fs_url))
         
-        layers = self._url_request(fs_url + "/layers", request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service layers')
-        complex_renderers = {} # Overwriting a feature service from a FGDB does not support complex renderers
-        for layer in layers['layers']:
-            if 'drawingInfo' in layer:
-                if 'renderer' in layer['drawingInfo']:
-                    if 'type' in layer['drawingInfo']['renderer']:
-                        if layer['drawingInfo']['renderer']['type'] != 'simple':
-                            complex_renderers[layer['id']] = layer['drawingInfo']
-                            layer['drawingInfo'] = ""
-                            
+        layers = self._url_request(fs_url + "/layers", request_parameters, repeat=2, error_text='Unable to get JSON definition of feature service layers')                           
         publish_params['layers'] = layers['layers']
         publish_params['tables'] = layers['tables']
 
@@ -460,12 +451,15 @@ class _SyncFeatureCollection(object):
                 if lyr is not None:
                     lyr['name'] = mapping[1]
 
+        #Need to pass the C encoding for '<' and '>', otherwise publish fails.        
+        publish_params_json = json.dumps(publish_params).replace('<', '\u003c').replace('>', '\u003e')
+        
         attempt_count = 2
         for i in range(attempt_count):
             try:         
                 url = '{0}sharing/rest/content/users/{1}/publish'.format(org_url, self._config_options['username'])
                 request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
-                                      'publishParameters' : json.dumps(publish_params), 'itemID' : self._config_options['gdb_item_id'],
+                                      'publishParameters' : publish_params_json, 'itemID' : self._config_options['gdb_item_id'],
                                       'overwrite' : True, 'fileType' : 'fileGeodatabase'}
                 response = self._url_request(url, request_parameters, "POST", error_text='Failed to update {} feature service'.format(basename))
                 if 'services' not in response:
@@ -480,19 +474,7 @@ class _SyncFeatureCollection(object):
                 if i+1 == attempt_count:              
                     raise ex
                 self._log_message(ex.message)
-        
-        for identifier in complex_renderers: # Set the renderer definition back on the layer after overwrite completes
-            find_string = "/rest/services"
-            index = fs_url.find(find_string)
-            admin_url = '{0}/rest/admin/services{1}/{2}/updateDefinition'.format(fs_url[:index], fs_url[index + len(find_string):], identifier)
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'updateDefinition' : '{{"drawingInfo" : {}}}'.format(json.dumps(complex_renderers[identifier])), 'async' : 'false'}
-            try: 
-                response = self._url_request(admin_url, request_parameters, "POST", repeat=2, error_text="Layer {} drawing info failed to update".format(identifier))
-            except Exception as ex:
-                self._log_message("Layer {0} drawing info failed to update: {1}".format(identifier, response))
-                continue
-            self._log_message("Layer {} drawing info updated".format(identifier))
-            
+                    
         self._log_message("{} feature service updated".format(basename))
 
     def _update_feature_collection(self):
