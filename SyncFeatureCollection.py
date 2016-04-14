@@ -452,7 +452,7 @@ class _SyncFeatureCollection(object):
                     lyr['name'] = mapping[1]
 
         #Need to pass the C encoding for '<' and '>', otherwise publish fails.        
-        publish_params_json = json.dumps(publish_params).replace('<', '\u003c').replace('>', '\u003e')
+        publish_params_json = json.dumps(publish_params).replace('<', '\\u003c').replace('>', '\\u003e')
         
         attempt_count = 2
         for i in range(attempt_count):
