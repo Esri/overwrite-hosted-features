@@ -252,7 +252,7 @@ class _SyncFeatureCollection(object):
 
     def _log_error(self):
         """Log an error message."""
-        pymsg = "PYTHON ERRORS:\nTraceback info:\n{1}\nError Info:\n{0}".format(sys.exc_info()[1].message, "".join(traceback.format_tb(sys.exc_info()[2])))
+        pymsg = "PYTHON ERRORS:\nTraceback info:\n{1}\nError Info:\n{0}".format(str(sys.exc_info()[1]), "".join(traceback.format_tb(sys.exc_info()[2])))
         self._log_message(pymsg, True)
 
     def _url_request(self, url, request_parameters, request_type='GET', files=None, repeat=0, error_text="Error", raise_on_failure=True):
@@ -470,10 +470,10 @@ class _SyncFeatureCollection(object):
                 self._wait_on_job(feature_service_id, "publish", service['jobId'], "Failed to update {0} feature service, job id: {1}".format(basename, service['jobId']))
                 break
             except Exception as ex:
-                ex.message = "Attempt {0}: {1}".format(i+1, ex.message)
+                ex.args = ("Attempt {0}: {1}".format(i+1, str(ex)),)
                 if i+1 == attempt_count:              
                     raise ex
-                self._log_message(ex.message)
+                self._log_message(str(ex))
                     
         self._log_message("{} feature service updated".format(basename))
 
@@ -506,10 +506,10 @@ class _SyncFeatureCollection(object):
                 self._wait_on_job(feature_collection_id, "export", response['jobId'], "Failed to update feature collection, job id: {0}".format(response['jobId']))
                 break
             except Exception as ex:
-                ex.message = "Attempt {0}: {1}".format(i+1, ex.message)
+                ex.args = ("Attempt {0}: {1}".format(i+1, str(ex)),)
                 if i+1 == attempt_count:              
                     raise ex
-                self._log_message(ex.message)
+                self._log_message(str(ex))
 
         date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
