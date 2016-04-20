@@ -148,7 +148,7 @@ class _MultiPartForm(object):
         textwriter.write('--{}--\r\n\r\n'.format(boundary))
         self.form_data = buf.getvalue()
 
-class _SyncFeatureCollection(object):
+class _OverwriteHostedFeatures(object):
 
     def __init__(self):
         self._config_options = {}
@@ -158,12 +158,12 @@ class _SyncFeatureCollection(object):
         
         Keyword arguments:
         config_file - Path to the configuration file. 
-        If None it will look for a file called SyncFeatureCollection.cfg in the same directory as the executing script.
+        If None it will look for a file called overwrite_hosted_features.cfg in the same directory as the executing script.
         """
 
         config = configparser.ConfigParser()
         if config_file is None:
-            config_file = os.path.join(os.path.dirname(__file__), 'SyncFeatureCollection.cfg')
+            config_file = os.path.join(os.path.dirname(__file__), 'overwrite_hosted_features.cfg')
         config.readfp(open(config_file))
 
         log_path = _validate_input(config, 'Log File', 'path', 'path', False)
@@ -218,13 +218,13 @@ class _SyncFeatureCollection(object):
             if is_file:
                 path = log_path
             else:
-                path = os.path.join(logfile_location, "SyncLog.txt")
+                path = os.path.join(logfile_location, "OverwriteLog.txt")
 
             log_path = path
             log = open(path, "a")
             date = self._config_options['start_time'].strftime('%Y-%m-%d %H:%M:%S')
             log.write("----------------------------" + "\n")
-            log.write("Begin Data Sync: " + str(date) + "\n")
+            log.write("Begin Data Overwrite: " + str(date) + "\n")
             log.close()
 
     def _log_message(self, my_message, is_error=False):
@@ -381,11 +381,11 @@ class _SyncFeatureCollection(object):
         Keyword arguments:
         gdb_name - the name of the geodatabase"""
         url = '{0}sharing/rest/search'.format(self._config_options['org_url'])
-        request_parameters = {'f' : 'json', 'q' : 'SyncFeatureCollection owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
+        request_parameters = {'f' : 'json', 'q' : 'OverwriteHostedFeatures owner:{0} type:"File Geodatabase"'.format(self._config_options['username']), 
                               'token' : self._config_options['token']}
         response = self._url_request(url, request_parameters, error_text='Failed to upload file geodatabase')
         results = response['results']
-        existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "SyncFeatureCollection" in r['tags']), None)
+        existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "OverwriteHostedFeatures" in r['tags']), None)
         if existing_gdb is None:
             self._log_message("Failed to find file geodatabase on the portal named {0}: {1}".format(gdb_name, response))
             return
@@ -407,7 +407,7 @@ class _SyncFeatureCollection(object):
         self._log_message("Uploading file geodatabase {}".format(fgdb))
     
         try:
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'tags' : 'SyncFeatureCollection',
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'tags' : 'OverwriteHostedFeatures',
                                   'itemType' : 'file', 'async' : False,
                                   'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
                                   'filename' : os.path.basename(fgdb), 'title' : self._config_options['basename']}
@@ -534,7 +534,7 @@ class _SyncFeatureCollection(object):
                 self._log_message("Failed to delete file geodatabase: {0}".format(response))
 
     def run(self, config_file):
-        """Run the feature collection sync."""
+        """Overwrite hosted features."""
         try:         
             self._read_config(config_file)
             self._config_options['token'] = self._get_token()
@@ -582,9 +582,9 @@ def _validate_input(config, group, name, variable_type, required):
             return None
 
 def run(config_file=None):
-    """Run the feature collection sync."""
-    sync = _SyncFeatureCollection()
-    sync.run(config_file)
+    """Overwrite hosted features."""
+    overwrite = _OverwriteHostedFeatures()
+    overwrite.run(config_file)
 
 if __name__ == "__main__":
     CONFIG_FILE = None
