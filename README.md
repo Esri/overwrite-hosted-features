@@ -1,6 +1,8 @@
-511-Script
+Overwrite Hosted Features
 ====================
-The [Transportation 511](http://links.esri.com/stategovernment/help/transportation511) viewer can by used by departments of transportation to monitor the status of incidents, accidents and roadway conditions.  Transportation 511 services are used to provide content to the Transportation 511 application.  To support variable load, roadway condition data will be exported into a Feature Collection in ArcGIS Online and used in the application configuration.  The Transportation 511 script can be used to keep the Transportation 511 Feature Collection contents up to date with information from your Incident Management System.
+The Overwrite Hosted Features script can be used to keep the contents of a Feature Collection up to date with information from your source data.
+
+An example of the Overwrite Hosted Features script in use is in the [Transportation 511](http://links.esri.com/stategovernment/help/transportation511) viewer, which can by used by departments of transportation to monitor the status of incidents, accidents and roadway conditions.  Transportation 511 services are used to provide content to the Transportation 511 application.  To support variable load, roadway condition data will be exported into a Feature Collection in ArcGIS Online and used in the application configuration.  The Overwrite Hosted Features script can be used to keep the Transportation 511 Feature Collection contents up to date with information from the Incident Management System.
 
 ## Features
 
