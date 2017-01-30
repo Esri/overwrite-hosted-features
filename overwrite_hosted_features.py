@@ -407,6 +407,8 @@ class _OverwriteHostedFeatures(object):
         self._log_message("Uploading file geodatabase {}".format(fgdb))
     
         try:
+            self._find_and_delete_gdb(gdb_name)
+
             request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'tags' : 'OverwriteHostedFeatures',
                                   'itemType' : 'file', 'async' : False,
                                   'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
