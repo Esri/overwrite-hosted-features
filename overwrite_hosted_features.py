@@ -375,7 +375,7 @@ class _OverwriteHostedFeatures(object):
         request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
         return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
 
-    def _find_and_delete_gdb(self, gdb_name):
+    def _find_and_delete_gdb(self, gdb_name, test=True):
         """Search the portal for a geodatabase with a given name owned by the owner specified and if found delete the item.
 
         Keyword arguments:
@@ -387,7 +387,8 @@ class _OverwriteHostedFeatures(object):
         results = response['results']
         existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name and "OverwriteHostedFeatures" in r['tags']), None)
         if existing_gdb is None:
-            self._log_message("Failed to find file geodatabase on the portal named {0}: {1}".format(gdb_name, response))
+            if test:
+                self._log_message("Failed to find file geodatabase on the portal named {0}: {1}".format(gdb_name, response))
             return
 
         self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
@@ -407,7 +408,7 @@ class _OverwriteHostedFeatures(object):
         self._log_message("Uploading file geodatabase {}".format(fgdb))
     
         try:
-            self._find_and_delete_gdb(gdb_name)
+            self._find_and_delete_gdb(gdb_name, False)
 
             request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'tags' : 'OverwriteHostedFeatures',
                                   'itemType' : 'file', 'async' : False,
