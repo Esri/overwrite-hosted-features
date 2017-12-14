@@ -355,6 +355,7 @@ class _OverwriteHostedFeatures(object):
             raise Exception("Item {} is not a feature service".format(self._config_options['feature_service_id'])) 
 
         self._config_options['basename'] = item['title']
+        self._config_options['fs_owner'] = item['owner']
 
         if 'feature_collection_id' in self._config_options:
             url = '{0}sharing/rest/content/items/{1}'.format(self._config_options['org_url'], self._config_options['feature_collection_id'])
@@ -432,9 +433,28 @@ class _OverwriteHostedFeatures(object):
             self._log_message("Failed to upload file geodatabase. Searching the portal for a file geodatabase with the same name")
             self._find_and_delete_gdb(gdb_name, fgdb)
             response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
-    
-        self._config_options['gdb_item_id'] = response['id']
+
+        gdb_id = response['id']
+
+        self._add_relationship(gdb_id, files)
+
+        self._config_options['gdb_item_id'] = gdb_id
         self._log_message("File geodatabase upload complete")
+
+    def _add_relationship(self, gdb_id, files):
+        """Adds a relationship between the uploaded file geodatabase and the feature service."""
+        """This relationship is required for the overwrite to work in a Portal environment."""
+        """The user defined in the config file must own both items."""
+        try:
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'async' : False, 
+                                  'originItemId': self._config_options['feature_service_id'], 'destinationItemId': gdb_id, 'relationshipType': 'Service2Data'}
+
+            url = '{0}sharing/rest/content/users/{1}/addRelationship'.format(self._config_options['org_url'], self._config_options['username'])
+            response = self._url_request(url, request_parameters, files=files, error_text='Failed to create relationship')
+        except Exception:
+            self._log_message("Failed to add a relationship between Feature Service and the File Geodatabase.")
+            if self._config_options['fs_owner'] != self._config_options['username']:
+                self._log_message("Feature service owner must be the scripts configued user: {0} to add a relationship.".format(self._config_options['username']))
 
     def _update_feature_service(self):
         """Overwrites the feature service using the uploaded file geodatabase."""
