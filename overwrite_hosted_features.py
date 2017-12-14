@@ -398,7 +398,7 @@ class _OverwriteHostedFeatures(object):
             return
         else:
             existing_gdb_tags = next((r['tags'] for r in results if r['id'] == existing_gdb), None)
-            if not "OverwriteHostedFeatures" in existing_gdb_tags:
+            if len(existing_gdb_tags) > 0 and not "OverwriteHostedFeatures" in existing_gdb_tags:
                 raise Exception("A file geodatabase on the portal named {0} already exists.".format(gdb_name))
 
         self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
