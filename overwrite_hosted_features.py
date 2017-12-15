@@ -374,7 +374,37 @@ class _OverwriteHostedFeatures(object):
         item_id - the id of the item to delete"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
         request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
-        return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
+        response = self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
+        return self._validate_delete(response, item_id)
+
+    def _validate_delete(self, delete_response, item_id):
+        """Validate that the item is no longer there
+        
+        We have experienced issues with delete and believe that they occur when various updates are occurring online
+        this function is intended to evaluate if delete occurred fully if not it will log a message so we have a close approximation
+        on the time the underlying issue occurred.
+
+        Keyword arguments:
+        delete_response - the response of the delete operation
+        item_id - the id of the item that should have been deleted"""
+        if 'success' in delete_response and delete_response['success']:
+            try:
+                request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'async' : False}
+                url = '{0}sharing/rest/content/users/{1}/items/{2}'.format(self._config_options['org_url'], self._config_options['username'], item_id)
+                response = self._url_request(url, request_parameters, error_text='Failed to delete file geodatabase')
+            except Exception:
+                return delete_response
+
+            #if the item is found then this situation has occurred
+            # log a message and attempt the delete again
+            self._log_message("File geodatabase was not deleted successfully.")
+            url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
+            request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
+            return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
+
+        else:
+            #if it was already not a successful delete return the failed response
+            return delete_response
 
     def _find_and_delete_gdb(self, gdb_name, fgdb):
         """Search the portal for a geodatabase with a given name owned by the owner specified and if found delete the item.
@@ -622,7 +652,8 @@ def run(config_file=None):
 
 if __name__ == "__main__":
     CONFIG_FILE = None
-    if len(sys.argv) > 1:
-        CONFIG_FILE = sys.argv[1]
+    #if len(sys.argv) > 1:
+    #    CONFIG_FILE = sys.argv[1]
+    CONFIG_FILE = r'C:\Solutions\AllHands2017\IS\Solution\Transportation511\Application\OverwriteScriptPortal10_6\overwrite_hosted_features.cfg'
     run(CONFIG_FILE)
 
