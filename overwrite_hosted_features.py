@@ -603,6 +603,8 @@ def _validate_input(config, group, name, variable_type, required):
             return list(v.split(',') for v in value.split(';'))
         elif variable_type == 'bool':
             return value.lower() == 'true'
+        elif variable_type == 'url':
+            return value if value.endswith('/') else value + '/'
         else:
             return value
     except (configparser.NoSectionError, configparser.NoOptionError):
