@@ -374,37 +374,45 @@ class _OverwriteHostedFeatures(object):
         item_id - the id of the item to delete"""
         url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
         request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
-        response = self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
-        return self._validate_delete(response, item_id)
+        return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
 
-    def _validate_delete(self, delete_response, item_id):
-        """Validate that the item is no longer there
+    def _validate_delete(self, gdb_name, fgdb):
+        """Validate that the item no longer exists
         
         We have experienced issues with delete and believe that they occur when various updates are occurring online
         this function is intended to evaluate if delete occurred fully if not it will log a message so we have a close approximation
-        on the time the underlying issue occurred.
+        on the time the underlying issue occurred and then attempt the delete again.
 
         Keyword arguments:
         delete_response - the response of the delete operation
         item_id - the id of the item that should have been deleted"""
-        if 'success' in delete_response and delete_response['success']:
-            try:
-                request_parameters = {'f' : 'json', 'token' : self._config_options['token'], 'async' : False}
-                url = '{0}sharing/rest/content/users/{1}/items/{2}'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-                response = self._url_request(url, request_parameters, error_text='Failed to delete file geodatabase')
-            except Exception:
-                return delete_response
+        files = {}
+        files['file'] = fgdb
+        request_parameters = {'f' : 'json', 'token' : self._config_options['token'],
+                    'itemType' : 'file', 'async' : False,
+                    'type' : 'File Geodatabase', 'descriptipion' : 'GDB',
+                    'filename' : gdb_name}
 
-            #if the item is found then this situation has occurred
-            # log a message and attempt the delete again
-            self._log_message("File geodatabase was not deleted successfully.")
-            url = '{0}sharing/rest/content/users/{1}/items/{2}/delete'.format(self._config_options['org_url'], self._config_options['username'], item_id)
-            request_parameters = {'f' : 'json', 'token' : self._config_options['token']}
-            return self._url_request(url, request_parameters, 'POST', repeat=2, raise_on_failure=False)
+        url = '{0}sharing/rest/content/users/{1}'.format(self._config_options['org_url'], self._config_options['username'])
+        response = self._url_request(url, request_parameters, files=files, error_text='Failed to upload file geodatabase')
+        results = response['items']
+        existing_gdb = next((r['id'] for r in results if r['name'] == gdb_name), None)
 
+        if existing_gdb is None:
+            r = {}
+            r['success'] = True
+            return r
         else:
-            #if it was already not a successful delete return the failed response
-            return delete_response
+            existing_gdb_tags = next((r['tags'] for r in results if r['id'] == existing_gdb), None)
+            if len(existing_gdb_tags) > 0 and not "OverwriteHostedFeatures" in existing_gdb_tags:
+                raise Exception("A file geodatabase on the portal named {0} already exists.".format(gdb_name))
+            else:
+                self._log_message("File geodatabase was not deleted successfully.")
+
+        self._log_message("File geodatabase {} found on the portal, deleting the item".format(gdb_name))
+
+        return self._delete_item(existing_gdb)
+
 
     def _find_and_delete_gdb(self, gdb_name, fgdb):
         """Search the portal for a geodatabase with a given name owned by the owner specified and if found delete the item.
@@ -435,7 +443,9 @@ class _OverwriteHostedFeatures(object):
 
         response = self._delete_item(existing_gdb)
         if 'success' in response and response['success']:
-            self._log_message("File geodatabase deleted")
+            validate_delete_response = self._validate_delete(gdb_name, fgdb)
+            if 'success' in validate_delete_response and validate_delete_response['success']:
+                self._log_message("File geodatabase deleted")
         else:
             self._log_message("Failed to delete file geodatabase: {0}".format(response))
 
@@ -652,8 +662,7 @@ def run(config_file=None):
 
 if __name__ == "__main__":
     CONFIG_FILE = None
-    #if len(sys.argv) > 1:
-    #    CONFIG_FILE = sys.argv[1]
-    CONFIG_FILE = r'C:\Solutions\AllHands2017\IS\Solution\Transportation511\Application\OverwriteScriptPortal10_6\overwrite_hosted_features.cfg'
+    if len(sys.argv) > 1:
+        CONFIG_FILE = sys.argv[1]
     run(CONFIG_FILE)
 
