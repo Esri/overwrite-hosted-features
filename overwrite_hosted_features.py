@@ -517,6 +517,11 @@ class _OverwriteHostedFeatures(object):
         publish_params['layers'] = layers['layers']
         publish_params['tables'] = layers['tables']
 
+        target_sr = { "wkid" : 102100 }
+        if "spatialReference" in feature_service:
+            target_sr = feature_service["spatialReference"]
+        publish_params['targetSR'] = target_sr
+
         if 'layer_mapping' in self._config_options: #The name of the layer needs to match the name of the feature class for it to be succesfully overwritten
             for mapping in self._config_options['layer_mapping']:
                 lyr = next((i for i in publish_params['layers'] if i['name'] == mapping[0]), None)
